@@ -347,6 +347,37 @@ class TestCleanLuaConfigs(unittest.TestCase):
             self.assertFalse(os.path.isfile(os.path.join(lua_dir, "730.lua")))
 
 
+class TestOpenSteamToolConfigAndManifestLua(unittest.TestCase):
+    """测试 opensteamtool.toml 与 manifest.lua 部署"""
+
+    def setUp(self):
+        self.injector = DLLInjector()
+
+    def test_deploy_opensteamtool_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.injector.set_steam_path(tmpdir)
+            ok, msg = self.injector.deploy_opensteamtool_config()
+            self.assertTrue(ok)
+            cfg_path = os.path.join(tmpdir, "opensteamtool.toml")
+            self.assertTrue(os.path.isfile(cfg_path))
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn('url = "wudrm"', content)
+            self.assertIn('[manifest]', content)
+
+    def test_deploy_manifest_lua(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.injector.set_steam_path(tmpdir)
+            ok, msg = self.injector.deploy_manifest_lua()
+            self.assertTrue(ok)
+            lua_path = os.path.join(tmpdir, "config", "lua", "manifest.lua")
+            self.assertTrue(os.path.isfile(lua_path))
+            with open(lua_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn('fetch_manifest_code', content)
+            self.assertIn('gmrc.wudrm.com', content)
+
+
 class TestIntegration(unittest.TestCase):
     """集成测试"""
 

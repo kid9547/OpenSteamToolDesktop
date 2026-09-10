@@ -25,6 +25,7 @@ import httpx
 from utils.logger import setup_logger
 
 from config import STEAM_CDN_API, SSL_VERIFY
+from utils.http_client import get_system_proxy
 
 logger = setup_logger(__name__)
 
@@ -91,6 +92,7 @@ class ManifestDownloader:
 
         # HTTP 客户端
         self._http = httpx.Client(
+            proxy=get_system_proxy(),
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -382,7 +384,9 @@ class ManifestDownloader:
 
             servers = data.get("response", {}).get("servers", [])
 
-            # 过滤：优先选择 type="SteamCache" 或 type="CDN" 且加权负载=130 的
+            # Steam's weighted_load is dynamic; older code accepted only 130,
+            # which now rejects every current CDN entry and forces stale
+            # fallback hosts.
             hosts = []
             for server in servers:
                 if isinstance(server, dict):
@@ -395,14 +399,10 @@ class ManifestDownloader:
                     # SteamCache 类型优先
                     if srv_type == "SteamCache":
                         hosts.append(host)
-                    # CDN 类型中负载正常的
                     elif srv_type == "CDN":
-                        weighted_load = server.get("weighted_load", 0)
-                        if weighted_load == 130:
-                            hosts.append(host)
+                        hosts.append(host)
 
-            # 按 HTTPS 支持排序（HTTPS 优先）
-            # 简单的启发式：以数字开头的域名通常是 cache 主机
+            # Prefer SteamCache entries, then ordinary CDN entries.
             logger.debug(f"Filtered {len(hosts)} usable CDN hosts from {len(servers)} total")
             return hosts
 

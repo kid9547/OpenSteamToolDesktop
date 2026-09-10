@@ -26,6 +26,7 @@ from core.game_manager import DepotInfo, GameMetadata
 from utils.logger import setup_logger
 
 from config import STEAM_STORE_API, STEAMCMD_API, TOKEN_API, DEPOT_KEYS_API_ALT, SSL_VERIFY
+from utils.http_client import get_system_proxy
 
 logger = setup_logger(__name__)
 logger.info(f"SSL verification: {'disabled' if not SSL_VERIFY else 'enabled'} (from config)")
@@ -63,6 +64,7 @@ class MetadataFetcher:
 
         # 同步 HTTP 客户端（在 worker 线程中使用）
         self._http = httpx.Client(
+            proxy=get_system_proxy(),
             verify=SSL_VERIFY,  # 使用 config 中的 SSL 配置
             headers={
                 "User-Agent": (
@@ -711,6 +713,11 @@ class MetadataFetcher:
 
         result: list[DepotInfo] = []
         for depot_id, info in depots.items():
+            # SteamCMD puts non-depot metadata such as "branches" and
+            # "baselanguages" beside numeric depot IDs. Never emit those
+            # fields into Lua as addappid(...) entries.
+            if not str(depot_id).isdigit():
+                continue
             if not isinstance(info, dict):
                 continue
 

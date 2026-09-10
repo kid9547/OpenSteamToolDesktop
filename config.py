@@ -44,6 +44,22 @@ STEAM_CDN_API: str = (
     "https://api.steampowered.com/IContentServerDirectoryService/"
     "GetServersForSteamPipe/v1/?cell_id=33&max_servers=30"
 )
+STEAM_MONITOR_PATTERN_RAW: str = (
+    "https://raw.githubusercontent.com/OpenSteam001/steam-monitor/"
+    "pattern/{component}/{sha256}.toml"
+)
+STEAM_MONITOR_PATTERN_CDN: str = (
+    "https://cdn.jsdelivr.net/gh/OpenSteam001/steam-monitor@pattern/"
+    "{component}/{sha256}.toml"
+)
+STEAM_MONITOR_IPC_RAW: str = (
+    "https://raw.githubusercontent.com/OpenSteam001/steam-monitor/ipc/"
+    "{component}/{sha256}.toml"
+)
+STEAM_MONITOR_IPC_CDN: str = (
+    "https://cdn.jsdelivr.net/gh/OpenSteam001/steam-monitor@ipc/"
+    "{component}/{sha256}.toml"
+)
 STEAMCMD_API: str = "https://api.steamcmd.net/v1/info"
 SUDAMA_API_DEPOT_KEYS: str = "https://api.sudama.app/v1/depotkeys"
 TOKEN_API: str = "https://api.993499094.xyz/appaccesstokens.json"

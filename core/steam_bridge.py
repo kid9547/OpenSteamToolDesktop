@@ -18,6 +18,7 @@ from core.steam_detector import SteamDetector, SteamStatus
 from core.dll_injector import DLLInjector, InjectStatus, InjectResult
 from core.dll_manager import DLLManager
 from utils.logger import setup_logger
+from core.steam_pattern_sync import SteamPatternSync
 
 logger = setup_logger(__name__)
 
@@ -178,8 +179,16 @@ class SteamBridge:
         if result.status == InjectStatus.SUCCESS or result.status == InjectStatus.DLL_ALREADY_DEPLOYED:
             logger.debug("Creating Lua directory...")
             lua_result = self._injector.create_lua_dir()
-            logger.info(f"Injection successful: {result.message}；{lua_result.message}")
-            return True, result.message + "；" + lua_result.message
+            pattern_ok, pattern_message = SteamPatternSync(self._steam_path).sync()
+            if pattern_ok:
+                logger.info("Steam signatures ready: %s", pattern_message)
+            else:
+                logger.warning("Steam signatures are not ready: %s", pattern_message)
+            self._injector.deploy_opensteamtool_config()
+            self._injector.deploy_manifest_lua()
+            message = result.message + "；" + lua_result.message + "；" + pattern_message + "；运行时配置(wudrm)已就绪"
+            logger.info("Injection completed: %s", message)
+            return True, message
 
         logger.error(f"Injection failed: {result.message}")
         return False, result.message
@@ -195,6 +204,14 @@ class SteamBridge:
         logger.debug(f"Verification result: {result.status}, {result.message}")
 
         if result.status == InjectStatus.SUCCESS:
+            missing_patterns = SteamPatternSync(self._steam_path).missing_patterns()
+            if missing_patterns:
+                message = "DLL 已部署，但 Steam 签名文件缺失：" + "；".join(missing_patterns)
+                logger.warning(message)
+                return False, message
+            # 自动补全运行时配置与 manifest 解析器
+            self._injector.deploy_opensteamtool_config()
+            self._injector.deploy_manifest_lua()
             return True, result.message
         else:
             return False, result.message

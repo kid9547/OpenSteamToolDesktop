@@ -26,10 +26,18 @@ ICON_PATH = PROJECT_ROOT / "assets" / "icon.ico"
 
 def clean():
     """清理构建产物"""
-    for d in [DIST_DIR, BUILD_DIR]:
-        if d.exists():
-            print(f"Removing {d}")
-            shutil.rmtree(d)
+    if BUILD_DIR.exists():
+        print(f"Removing {BUILD_DIR}")
+        shutil.rmtree(BUILD_DIR)
+
+    # 清理 dist 下的打包产物，保留用户放置在 dist/ 根目录的原始图标资源
+    app_dist = DIST_DIR / "OpenSteamToolDesktop"
+    if app_dist.exists():
+        print(f"Removing {app_dist}")
+        shutil.rmtree(app_dist)
+    for zip_file in DIST_DIR.glob("*.zip"):
+        print(f"Removing {zip_file}")
+        zip_file.unlink()
 
     nuitka_build = PROJECT_ROOT / "main.build"
     nuitka_dist = PROJECT_ROOT / "main.dist"

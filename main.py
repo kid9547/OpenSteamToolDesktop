@@ -127,9 +127,8 @@ def main() -> None:
     # Windows 任务栏图标：设置 AppUserModelID，否则任务栏显示 Python 默认图标
     try:
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            f"{APP_NAME}.{APP_VERSION}"
-        )
+        app_user_model_id = f"OpenSteamTool.{APP_NAME}.{APP_VERSION}".replace(" ", "")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_user_model_id)
     except Exception:
         pass
 
@@ -142,15 +141,19 @@ def main() -> None:
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
 
-    # 设置应用程序图标（影响任务栏）
+    # 设置应用程序图标（影响任务栏与主窗口）
     from pathlib import Path as _Path
-    if getattr(sys, 'frozen', False):
-        _icon_path = _Path(sys._MEIPASS) / "gui" / "icon.ico"
-    else:
-        _icon_path = _Path(__file__).parent / "gui" / "icon.ico"
-    if _icon_path.exists():
-        from PyQt6.QtGui import QIcon
-        app.setWindowIcon(QIcon(str(_icon_path)))
+    _icon_candidates = []
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        _base = _Path(sys._MEIPASS)
+        _icon_candidates.extend([_base / "assets" / "icon.ico", _base / "gui" / "icon.ico"])
+    _root = _Path(__file__).resolve().parent
+    _icon_candidates.extend([_root / "assets" / "icon.ico", _root / "gui" / "icon.ico"])
+    for _cand in _icon_candidates:
+        if _cand.exists():
+            from PyQt6.QtGui import QIcon
+            app.setWindowIcon(QIcon(str(_cand)))
+            break
 
     logger = setup_logger(__name__)
     logger.info("=" * 60)

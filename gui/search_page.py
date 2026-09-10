@@ -813,7 +813,13 @@ class SearchPage(ScrollArea):
             self._game_manager.add_game_with_metadata(metadata)
 
             logger.info(f"Metadata fetch complete for {app_id} ({metadata.name})")
-            return {"depots": len(metadata.depots), "dlcs": len(metadata.dlc_ids)}
+            return {
+                "depots": len(metadata.depots),
+                "dlcs": len(metadata.dlc_ids),
+                "manifest_count": sum(1 for d in metadata.depots if d.manifest_gid),
+                "depot_keys": sum(1 for d in metadata.depots if d.depot_key),
+                "has_access_token": bool(metadata.access_token),
+            }
         except Exception as e:
             logger.warning(f"Metadata fetch failed for {app_id}: {e}")
             return None
@@ -826,9 +832,20 @@ class SearchPage(ScrollArea):
                     logger.debug(f"Close fetcher failed: {e}")
 
     def _on_metadata_done(self, app_id: str, result: dict | None):
-        """后台元数据获取完成（静默处理）"""
+        """后台元数据获取完成"""
         if result:
             logger.info(f"Game {app_id} Lua + Manifest ready: {result}")
+            depot_count = result.get("depots", 0)
+            manifest_count = result.get("manifest_count", 0)
+            depot_keys = result.get("depot_keys", 0)
+            InfoBar.success(
+                "入库配置就绪",
+                f"AppID {app_id} 入库成功（{depot_count} 个 Depot，{depot_keys} 个密钥，{manifest_count} 个清单已绑定）。"
+                "若 Steam 正在运行，请重启 Steam 以生效并开始下载。",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=6000,
+            )
 
     # ── Worker 管理 ──────────────────────────────────────────
 

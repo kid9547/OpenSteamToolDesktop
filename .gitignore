@@ -26,3 +26,6 @@ Thumbs.db
 
 # Application data
 *.log
+.pytest_cache/
+OpenSteamToolDesktop-*.zip
+precompiled_release/

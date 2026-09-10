@@ -65,6 +65,7 @@ def _get_system_proxy() -> str | None:
 
 
 _system_proxy = _get_system_proxy()
+get_system_proxy = _get_system_proxy
 
 # ── 模块级常量 ──────────────────────────────────────────────
 _DEFAULT_TIMEOUT: float = HTTP_DEFAULT_TIMEOUT

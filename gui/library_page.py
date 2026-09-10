@@ -14,17 +14,20 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QDialog, QFormLayout, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QListWidget, QListWidgetItem,
-    QGroupBox, QMessageBox, QAbstractItemView,
+    QGroupBox, QMessageBox, QAbstractItemView, QFileDialog,
 )
 
 from qfluentwidgets import (
     ScrollArea, SubtitleLabel, CaptionLabel, BodyLabel,
     PrimaryPushButton, PushButton, SearchLineEdit,
-    ComboBox, TransparentToolButton,
+    ComboBox, TransparentToolButton, DropDownPushButton,
+    RoundMenu, Action,
     InfoBar, InfoBarPosition, FluentIcon,
     ToolTipFilter, ToolTipPosition,
     MessageBox,
 )
+
+from core.import_service import ImportService
 
 from core.game_manager import LuaGameManager, GameInfo, GameMetadata, DepotInfo
 from gui.widgets import GameCard
@@ -76,12 +79,17 @@ class LibraryPage(ScrollArea):
         self._card_list: list[GameCard] = []
         self._alive = True  # 安全标志
 
+        # 初始化清单与 Lua 导入服务
+        steam_path = self._bridge.get_steam_path() if self._bridge else ""
+        self._import_service = ImportService(steam_path, self._game_manager)
+
         # 异步 Worker 引用（防止回调到已删除对象）
         self._load_worker = None
         self._name_workers: list[AsyncWorker] = []
 
         self.setObjectName("libraryPage")
         self.setWidgetResizable(True)
+        self.setAcceptDrops(True)
 
         self._container = QWidget()
         self._container.setObjectName("libraryContainer")
@@ -108,6 +116,18 @@ class LibraryPage(ScrollArea):
         self.stats_label.setTextColor("#606060", "#d2d2d2")
         header.addStretch(1)
         header.addWidget(self.stats_label)
+
+        # 导入清单 / Lua 下拉按钮
+        self.import_btn = DropDownPushButton(FluentIcon.FOLDER_ADD, "导入清单/Lua", self)
+        import_menu = RoundMenu(parent=self.import_btn)
+        action_files = Action(FluentIcon.DOCUMENT, "选择文件导入 (.manifest / .lua / .zip)", self)
+        action_files.triggered.connect(self._on_import_files_clicked)
+        action_folder = Action(FluentIcon.FOLDER, "选择文件夹导入 (批量扫描目录)", self)
+        action_folder.triggered.connect(self._on_import_folder_clicked)
+        import_menu.addAction(action_files)
+        import_menu.addAction(action_folder)
+        self.import_btn.setMenu(import_menu)
+        header.addWidget(self.import_btn)
 
         self.refresh_btn = TransparentToolButton(FluentIcon.SYNC, self)
         self.refresh_btn.setFixedSize(32, 32)
@@ -543,3 +563,91 @@ class LibraryPage(ScrollArea):
             self._load_worker.cancel()
             self._load_worker.wait(2000)
             self._load_worker = None
+
+    # ---- 批量导入清单与 Lua ----
+
+    def _on_import_files_clicked(self):
+        """点击选择文件导入"""
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "选择清单或 Lua 配置文件",
+            "",
+            "支持的文件 (*.manifest *.lua *.zip);;Lua 配置文件 (*.lua);;Steam 清单文件 (*.manifest);;ZIP 压缩包 (*.zip);;所有文件 (*.*)",
+        )
+        if files:
+            self.execute_import(files)
+
+    def _on_import_folder_clicked(self):
+        """点击选择文件夹导入"""
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "选择包含清单或 Lua 的文件夹",
+            "",
+        )
+        if folder:
+            self.execute_import([folder])
+
+    def execute_import(self, paths: list[str]) -> None:
+        """执行批量导入并通知用户"""
+        steam_path = self._bridge.get_steam_path() if self._bridge else ""
+        if not steam_path:
+            InfoBar.error(
+                "导入失败",
+                "未检测到 Steam 安装路径，请先在注入管理或设置中配置",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=4000,
+            )
+            return
+
+        self._import_service.set_steam_path(steam_path)
+        result = self._import_service.import_paths(paths)
+
+        if result.success:
+            InfoBar.success(
+                "导入成功",
+                result.summary(),
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+            )
+            self._load_games_async()
+            self.library_changed.emit()
+        else:
+            InfoBar.warning(
+                "导入提示",
+                result.summary(),
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+            )
+
+    # ---- 拖拽事件（Drag & Drop） ----
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                p = url.toLocalFile()
+                if p and (os.path.isdir(p) or p.lower().endswith(('.lua', '.manifest', '.zip'))):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.toLocalFile()]
+        if not paths:
+            event.ignore()
+            return
+
+        event.acceptProposedAction()
+        self.execute_import(paths)

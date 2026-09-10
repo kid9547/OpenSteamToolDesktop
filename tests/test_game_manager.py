@@ -10,7 +10,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.game_manager import LuaGameManager, GameInfo
+from core.game_manager import LuaGameManager, GameInfo, GameMetadata, DepotInfo
+from core.metadata_fetcher import MetadataFetcher
 
 
 class TestGameInfo(unittest.TestCase):
@@ -37,6 +38,26 @@ class TestGameInfo(unittest.TestCase):
         self.assertTrue(gi.has_manifest)
         self.assertTrue(gi.has_appticket)
         self.assertEqual(gi.lua_path, "/path/to/730.lua")
+
+
+class TestMetadataDepotParsing(unittest.TestCase):
+    """SteamCMD metadata fields must not become fake depot IDs."""
+
+    def test_skips_non_numeric_top_level_fields(self):
+        parsed = MetadataFetcher._parse_depots({
+            "1623731": {
+                "manifests": {
+                    "public": {
+                        "gid": "868868087024202254",
+                        "download": "35943136912",
+                    }
+                }
+            },
+            "branches": {"public": {"buildid": "25094871"}},
+            "baselanguages": "english,schinese",
+        })
+        self.assertEqual([d.depot_id for d in parsed], ["1623731"])
+        self.assertEqual(parsed[0].manifest_gid, "868868087024202254")
 
 
 class TestLuaGameManager(unittest.TestCase):
@@ -91,6 +112,25 @@ class TestLuaGameManager(unittest.TestCase):
         with open(lua_file, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("addappid(730)", content)
+
+    def test_build_lua_includes_manifest_binding(self):
+        metadata = GameMetadata(
+            app_id="1623730",
+            name="Palworld",
+            depots=[
+                DepotInfo(
+                    depot_id="1623731",
+                    manifest_gid="868868087024202254",
+                    size=35943136912,
+                    depot_key="key",
+                )
+            ],
+        )
+        content = LuaGameManager._build_lua_content(metadata)
+        self.assertIn(
+            'setManifestid(1623731, "868868087024202254", 35943136912)',
+            content,
+        )
 
     def test_has_game(self):
         self.assertFalse(self.gm.has_game("730"))
@@ -233,5 +273,36 @@ class TestLuaGameManagerCaseInsensitive(unittest.TestCase):
         self.assertTrue(games[0].has_manifest)
 
 
+class TestEnsureManifestResolver(unittest.TestCase):
+    """测试自动创建 manifest.lua 与 opensteamtool.toml"""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.steam_dir = os.path.join(self._tmpdir.name, "Steam")
+        self.lua_dir = os.path.join(self.steam_dir, "config", "lua")
+        os.makedirs(self.lua_dir, exist_ok=True)
+        self.gm = LuaGameManager(self.lua_dir)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_add_game_creates_manifest_lua_and_toml(self):
+        meta = GameMetadata(app_id="1623730", name="Palworld")
+        ok = self.gm.add_game_with_metadata(meta)
+        self.assertTrue(ok)
+        manifest_lua = os.path.join(self.lua_dir, "manifest.lua")
+        self.assertTrue(os.path.isfile(manifest_lua))
+        with open(manifest_lua, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("fetch_manifest_code", content)
+
+        toml_file = os.path.join(self.steam_dir, "opensteamtool.toml")
+        self.assertTrue(os.path.isfile(toml_file))
+        with open(toml_file, "r", encoding="utf-8") as f:
+            t_content = f.read()
+        self.assertIn('url = "wudrm"', t_content)
+
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -47,13 +47,17 @@ class MainWindow(MSFluentWindow):
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.resize(1200, 800)
         self.setMinimumSize(900, 600)
-        # 程序图标（兼容 PyInstaller 打包路径）
-        if getattr(sys, 'frozen', False):
-            icon_path = Path(sys._MEIPASS) / "gui" / "icon.ico"
-        else:
-            icon_path = Path(__file__).parent / "icon.ico"
-        if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
+        # 程序图标（兼容 PyInstaller 打包与源码运行路径）
+        icon_candidates = []
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            _base = Path(sys._MEIPASS)
+            icon_candidates.extend([_base / "assets" / "icon.ico", _base / "gui" / "icon.ico"])
+        _root = Path(__file__).resolve().parent.parent
+        icon_candidates.extend([_root / "assets" / "icon.ico", _root / "gui" / "icon.ico", Path(__file__).parent / "icon.ico"])
+        for cand in icon_candidates:
+            if cand.exists():
+                self.setWindowIcon(QIcon(str(cand)))
+                break
         self.titleBar.raise_()
 
         # 延迟导入页面
@@ -111,6 +115,12 @@ class MainWindow(MSFluentWindow):
 
         # 透明背景
         self.setStyleSheet("MSFluentWindow { background: transparent; }")
+
+        # 启用全窗口拖拽导入清单与 Lua
+        self.setAcceptDrops(True)
+        from core.import_service import ImportService
+        steam_path = self._bridge.get_steam_path() if self._bridge else ""
+        self._import_service = ImportService(steam_path, self._game_manager)
 
     def _check_dll_version_on_startup(self):
         """检查 DLL 版本（在首页 showEvent 时调用）
@@ -598,3 +608,73 @@ class MainWindow(MSFluentWindow):
             pass
 
         logger.info("MainWindow shutdown complete")
+
+    # ---- 拖拽导入清单与 Lua 支持 ----
+
+    def dragEnterEvent(self, event):
+        """拖拽进入窗口"""
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                p = url.toLocalFile()
+                if p and (os.path.isdir(p) or p.lower().endswith(('.lua', '.manifest', '.zip'))):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        """拖拽在窗口移动"""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        """放下文件或文件夹"""
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.toLocalFile()]
+        if not paths:
+            event.ignore()
+            return
+
+        event.acceptProposedAction()
+        self.handle_drag_drop_import(paths)
+
+    def handle_drag_drop_import(self, paths: list[str]) -> None:
+        """处理外部文件或目录拖拽导入"""
+        steam_path = self._bridge.get_steam_path() if self._bridge else ""
+        if not steam_path:
+            InfoBar.error(
+                "导入失败",
+                "未检测到 Steam 安装路径，请先配置 Steam 目录",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=4000,
+            )
+            return
+
+        self._import_service.set_steam_path(steam_path)
+        result = self._import_service.import_paths(paths)
+
+        if result.success:
+            InfoBar.success(
+                "批量导入成功",
+                result.summary(),
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+            )
+            # 刷新游戏库页面并跳转
+            if hasattr(self, "library_page"):
+                self.library_page._load_games_async()
+                self.switchTo(self.library_page)
+        else:
+            InfoBar.warning(
+                "导入提示",
+                result.summary(),
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+            )

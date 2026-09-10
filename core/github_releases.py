@@ -18,7 +18,15 @@ import urllib3
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from utils.logger import setup_logger
-from config import HTTP_DEFAULT_TIMEOUT, OPENSTEAMTOOL_REPO_URL, OPENSTEAMTOOL_RELEASES_URL, SSL_VERIFY
+from config import (
+    HTTP_DEFAULT_TIMEOUT,
+    OPENSTEAMTOOL_REPO_URL,
+    OPENSTEAMTOOL_RELEASES_URL,
+    SSL_VERIFY,
+    GITHUB_API_LATEST_RELEASE,
+)
+
+GITHUB_RELEASES_PAGE: str = OPENSTEAMTOOL_RELEASES_URL
 
 # 禁用 SSL 警告（已主动禁用 verify，避免日志被 InsecureRequestWarning 污染）
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
