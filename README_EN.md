@@ -9,8 +9,8 @@
   <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue?logo=windows" alt="Platform">
   <img src="https://img.shields.io/badge/Steam-Required-1b2838?logo=steam" alt="Steam Required">
   <img src="https://img.shields.io/badge/GUI-Fluent%20Design-0078D4?logo=microsoft" alt="GUI">
-  <img src="https://img.shields.io/github/v/release/yong0512/OpenSteamToolDesktop?color=green" alt="Release">
-  <img src="https://img.shields.io/github/downloads/yong0512/OpenSteamToolDesktop/total" alt="Downloads">
+  <img src="https://img.shields.io/github/v/release/kid9547/OpenSteamToolDesktop?color=green" alt="Release">
+  <img src="https://img.shields.io/github/downloads/kid9547/OpenSteamToolDesktop/total" alt="Downloads">
 </p>
 
 <p align="center">
@@ -25,7 +25,7 @@
 
 ## Download
 
-Go to the [Releases](https://github.com/yong0512/OpenSteamToolDesktop/releases) page to download the latest version.
+Go to the [Releases](https://github.com/kid9547/OpenSteamToolDesktop/releases) page to download the latest version.
 
 ---
 
@@ -48,6 +48,9 @@ Go to the [Releases](https://github.com/yong0512/OpenSteamToolDesktop/releases) 
 
 | Feature                   | Description                                                                                         |
 | ------------------------- | --------------------------------------------------------------------------------------------------- |
+| **Manifest & Lua Import** | **New**: Import via file/folder dialog or **drag-and-drop** (`.manifest` / `.lua` / `.zip` auto-extracted) with smart AppID detection |
+| **Network 403 Fix**       | **New**: Auto-configures `opensteamtool.toml` & `manifest.lua` multi-source fallback resolver (wudrm/steamrun) to fix Access Denied 403 error |
+| **Modern Frog Icon**      | **New**: Anti-aliased transparent frog avatar with full multi-res chain; fixes blank taskbar icon on Windows |
 | **Injection Manager**     | One-click deploy/remove OpenSteamTool DLLs with triple-layer verification, plus quick Steam restart |
 | **Game Search & Add**     | Search Steam games by AppID or English name; auto-fetch metadata and generate library config        |
 | **Full DLC Unlock**       | Automatically detects all DLCs associated with a game and unlocks them in one click                 |

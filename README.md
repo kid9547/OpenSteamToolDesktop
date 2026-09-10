@@ -9,8 +9,8 @@
   <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue?logo=windows" alt="Platform">
   <img src="https://img.shields.io/badge/Steam-必需-1b2838?logo=steam" alt="Steam Required">
   <img src="https://img.shields.io/badge/GUI-Fluent%20Design-0078D4?logo=microsoft" alt="GUI">
-  <img src="https://img.shields.io/github/v/release/yong0512/OpenSteamToolDesktop?color=green" alt="Release">
-  <img src="https://img.shields.io/github/downloads/yong0512/OpenSteamToolDesktop/total" alt="Downloads">
+  <img src="https://img.shields.io/github/v/release/kid9547/OpenSteamToolDesktop?color=green" alt="Release">
+  <img src="https://img.shields.io/github/downloads/kid9547/OpenSteamToolDesktop/total" alt="Downloads">
 </p>
 
 <p align="center">
@@ -25,7 +25,7 @@
 
 ## 下载
 
-前往 [Releases](https://github.com/yong0512/OpenSteamToolDesktop/releases) 页面下载最新版本。
+前往 [Releases](https://github.com/kid9547/OpenSteamToolDesktop/releases) 页面下载最新版本。
 
 ---
 
@@ -48,6 +48,9 @@
 
 | 功能             | 说明                                                  |
 | -------------- | --------------------------------------------------- |
+| **清单/Lua 导入**  | **新增**：支持点击选择或**全窗口拖拽**（`.manifest` / `.lua` / `.zip` 自动解压）批量导入，智能提取 AppID 并部署到双缓存目录 |
+| **403 错误修复**   | **新增**：自动部署 `opensteamtool.toml` 与 `manifest.lua` 多源解析器（wudrm/steamrun），彻底解决 Steam 下载清单时 403 Access Denied 报错 |
+| **现代青蛙图标**    | **新增**：高清反锯齿全透明现代青蛙设计，修复 Windows 任务栏应用白图标显示问题 |
 | **注入管理**       | 一键部署/移除 OpenSteamTool DLL，三层验证确保注入状态准确，支持快捷重启 Steam |
 | **游戏搜索入库**     | 按 AppID 或英文名称搜索 Steam 游戏，自动获取元数据并生成入库配置             |
 | **DLC 全解锁**    | 自动识别游戏关联的 DLC 列表，一键全部入库                             |
@@ -341,9 +344,17 @@ python build_exe.py --no-zip
 
 ---
 
+## 致谢与项目溯源
+
+- 本项目由 [kid9547](https://github.com/kid9547/OpenSteamToolDesktop) 基于 [yong0512/OpenSteamToolDesktop](https://github.com/yong0512/OpenSteamToolDesktop) 进行功能二次开发与维护。
+- 底层引擎基于 [OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool)。
+- 界面组件采用 [QFluentWidgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets)。
+
+---
+
 ## Star 走势
 
-[![Star History Chart](https://api.star-history.com/svg?repos=yong0512/OpenSteamToolDesktop&type=Date)](https://star-history.com/#yong0512/OpenSteamToolDesktop&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=kid9547/OpenSteamToolDesktop&type=Date)](https://star-history.com/#kid9547/OpenSteamToolDesktop&Date)
 
 ---
 

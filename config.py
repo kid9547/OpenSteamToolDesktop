@@ -20,7 +20,7 @@ os.makedirs(CONFIG_DIR, exist_ok=True)
 CONFIG_FILE: str = os.path.join(CONFIG_DIR, "config.json")
 
 # ============ GitHub 仓库 ============
-GITHUB_REPO_OWNER: str = "yong0512"
+GITHUB_REPO_OWNER: str = "kid9547"
 GITHUB_REPO_NAME: str = "OpenSteamToolDesktop"
 GITHUB_REPO_URL: str = f"https://github.com/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}"
 GITHUB_RELEASES_URL: str = f"{GITHUB_REPO_URL}/releases"
