@@ -161,21 +161,39 @@ class LuaGameManager:
         return self.add_game_with_metadata(metadata)
 
     def add_game_basic(self, app_id: str, name: str = "") -> bool:
-        """即时入库（仅记录 app_id + name，不写 Lua 文件）
+        """即时入库（立即写入基础 Lua 文件，后续后台拉取完整元数据时覆盖更新）"""
+        filepath = ""
+        if self._lua_dir:
+            try:
+                os.makedirs(self._lua_dir, exist_ok=True)
+                filepath = os.path.join(self._lua_dir, f"{app_id}.lua")
+                comment = f"-- {name} (由 OpenSteamToolDesktop 管理)\n" if name else f"-- AppID {app_id} (由 OpenSteamToolDesktop 管理)\n"
+                basic_content = f"{comment}addappid({app_id})\n"
+                if not os.path.exists(filepath):
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        f.write(basic_content)
+                    logger.info(f"Basic Lua file written for AppID {app_id}: {filepath}")
+                    self._ensure_manifest_resolver()
+            except Exception as e:
+                logger.warning(f"Could not write basic Lua for {app_id}: {e}")
 
-        Lua 文件在后续后台 fetch metadata 时写入。
-        """
-        if not any(g.app_id == app_id for g in self._games):
-            info = GameInfo(
-                app_id=app_id,
-                name=name,
-                lua_path="",  # Lua 尚未生成
-            )
-            self._games.append(info)
-            logger.info(f"Game {app_id} ({name or 'unknown'}) added to library (basic)")
-            return True
-        logger.debug(f"Game {app_id} already in library")
-        return False
+        # 增量或更新内存列表
+        for g in self._games:
+            if g.app_id == app_id:
+                if name and not g.name:
+                    g.name = name
+                if filepath and not g.lua_path:
+                    g.lua_path = filepath
+                return False
+
+        info = GameInfo(
+            app_id=app_id,
+            name=name,
+            lua_path=filepath,
+        )
+        self._games.append(info)
+        logger.info(f"Game {app_id} ({name or 'unknown'}) added to library (basic)")
+        return True
 
     def add_game_with_metadata(self, metadata: GameMetadata) -> bool:
         """将游戏加入库中（写入 Lua 文件）— 完整元数据模式

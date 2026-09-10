@@ -33,7 +33,7 @@ from core.game_manager import LuaGameManager
 from core.metadata_fetcher import MetadataFetcher
 from utils.async_worker import AsyncWorker
 from utils.logger import setup_logger
-from core.app_state import app_state, DLL_VERSION_MISMATCH
+from core.app_state import app_state, DLL_VERSION_MISMATCH, STEAM_PATH
 
 from utils.download_cover import CoverCache, download_cover
 
@@ -270,11 +270,13 @@ class SearchPage(ScrollArea):
         self._main_layout.addStretch()
 
         # 监听全局注入状态变化
-        from core.app_state import app_state
         app_state.injection_changed.connect(self._on_injection_changed)
 
         # 延迟加载推荐内容（避免构造期间大量网络请求导致崩溃）
-        QTimer.singleShot(100, self._show_recommendations)
+        self._rec_timer = QTimer(self)
+        self._rec_timer.setSingleShot(True)
+        self._rec_timer.timeout.connect(self._show_recommendations)
+        self._rec_timer.start(100)
 
     def _build_header(self):
         dark = isDarkTheme()
@@ -648,7 +650,6 @@ class SearchPage(ScrollArea):
                 card.load_cover_async()  # 已缓存 → 立即从内存显示
             else:
                 QTimer.singleShot(0, card.load_cover_async)  # 延迟启动，避免阻塞主线程
-        self._results_layout.addWidget(card)
 
     def _show_results_count(self, total: int):
         self._results_count.setText(f"共 {total} 个结果")
@@ -761,7 +762,6 @@ class SearchPage(ScrollArea):
             # 多源确定 Steam 路径
             steam_path = self._bridge.get_steam_path() if self._bridge else ""
             if not steam_path:
-                from core.app_state import app_state, STEAM_PATH
                 steam_path = str(app_state.get(STEAM_PATH, ""))
             if not steam_path and self._game_manager and getattr(self._game_manager, "_lua_dir", None):
                 try:
@@ -777,6 +777,10 @@ class SearchPage(ScrollArea):
                     steam_path = detected.path
 
             if steam_path and os.path.isdir(steam_path):
+                # 同步到全局状态与 bridge
+                app_state.set(STEAM_PATH, steam_path)
+                if self._bridge and not self._bridge.get_steam_path():
+                    self._bridge.set_steam_path(steam_path)
                 # 确保 Lua 目录正确设置
                 lua_dir = os.path.join(steam_path, "config", "lua")
                 if not self._game_manager.get_lua_dir():
@@ -1002,9 +1006,21 @@ class SearchPage(ScrollArea):
         for w in self._active_workers[:]:
             if w.isRunning():
                 w.wait(3000)  # 最多等待 3 秒
-            if w in self._active_workers:
-                self._active_workers.remove(w)
-        self._active_workers.clear()
+    def cleanup(self):
+        """安全清理所有活跃 Worker 与卡片定时器"""
+        if hasattr(self, "_rec_timer") and self._rec_timer.isActive():
+            self._rec_timer.stop()
+        for card in list(self._rec_cards):
+            try:
+                card.cleanup()
+            except Exception:
+                pass
+        for card in list(self._cards):
+            try:
+                card.cleanup()
+            except Exception:
+                pass
+        self._cancel_all_workers()
 
     # ── 生命周期 ──────────────────────────────────────────────
 

@@ -24,6 +24,7 @@ from utils.async_worker import AsyncWorker
 from utils.download_cover import CoverCache, download_cover
 
 from config import TEXT_COLOR
+from core.app_state import app_state, STEAM_PATH
 
 # 全局封面缓存（与 search_page 共享）
 _cover_cache = CoverCache.instance()
@@ -243,12 +244,10 @@ class GameCard(CardWidget):
         self.clean_cache_requested.emit(self.app_id)
 
     def _open_depotcache(self):
-        from core.app_state import app_state, STEAM_PATH
         steam_path = str(app_state.get(STEAM_PATH, ""))
         if steam_path:
             depot_dir = os.path.join(steam_path, "depotcache")
             os.makedirs(depot_dir, exist_ok=True)
-            import sys
             if sys.platform == "win32":
                 os.startfile(depot_dir)
             else:

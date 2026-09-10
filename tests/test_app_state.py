@@ -3,12 +3,12 @@
 """
 import unittest
 
-from PyQt6.QtCore import QCoreApplication
+from PyQt6.QtWidgets import QApplication
 
 # 确保 QApplication 存在（app_state 使用 QObject/Signal）
-_app = QCoreApplication.instance()
+_app = QApplication.instance()
 if _app is None:
-    _app = QCoreApplication([])
+    _app = QApplication([])
 
 from core.app_state import (
     AppState,

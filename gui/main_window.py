@@ -92,7 +92,6 @@ class MainWindow(MSFluentWindow):
         self.home_page.dll_check_needed.connect(self._check_dll_version_on_startup)
 
         # ---- 全局状态订阅（一处改动，全局跟进） ----
-        from core.app_state import app_state
         app_state.injection_changed.connect(self.home_page.refresh_status)
 
         # 保留旧信号兼容（InjectPage 内部同步用）
@@ -385,8 +384,6 @@ class MainWindow(MSFluentWindow):
                 position=InfoBarPosition.TOP,
             )
             # 提示用户重启 Steam
-            from qfluentwidgets import MessageBox
-            from PyQt6.QtWidgets import QMessageBox
             msg_box = MessageBox(
                 "重启 Steam",
                 "DLL 已更新并重新注入，是否立即重启 Steam？",

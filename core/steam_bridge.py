@@ -75,7 +75,6 @@ class SteamBridge:
 
     def _check_fallback_dlls(self, fallback_path: str) -> bool:
         """检查 fallback 目录是否包含所需的 DLL 文件"""
-        from core.dll_injector import DLLInjector
         for dll_name in DLLInjector.ALL_DLLS:
             if not os.path.isfile(os.path.join(fallback_path, dll_name)):
                 logger.warning(f"Missing DLL in fallback: {dll_name}")
@@ -263,6 +262,15 @@ class SteamBridge:
             return False
         all_deployed, _ = self._injector.check_dlls_deployed()
         return all_deployed
+
+    def set_steam_path(self, path: str) -> None:
+        """设置 Steam 安装路径并同步到 injector 与全局状态"""
+        self._steam_path = path
+        if path:
+            self._lua_dir = os.path.join(path, "config", "lua")
+            self._injector.set_steam_path(path)
+            from core.app_state import app_state, STEAM_PATH
+            app_state.set(STEAM_PATH, path)
 
     def get_steam_path(self) -> str:
         """获取 Steam 安装路径（优先本地缓存，回退全局状态）"""
