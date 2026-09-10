@@ -10,6 +10,8 @@ SearchPage — 专业搜索入库页面
 """
 from __future__ import annotations
 
+import os
+import sys
 import re
 import urllib.parse
 import webbrowser
@@ -730,56 +732,88 @@ class SearchPage(ScrollArea):
 
     # ── 入库逻辑 ──────────────────────────────────────────────
 
-    def _on_add_game(self, app_id: str, game_name: str):
-        # 检查 DLL 版本是否不匹配
-        if app_state.get(DLL_VERSION_MISMATCH):
-            msg_box = MessageBox(
-                "DLL 版本警告",
-                "当前 DLL 不是最新版本，建议更新后再入库。\n\n是否立即更新？",
-                self
-            )
-            msg_box.yesButton.setText("立即更新")
-            msg_box.cancelButton.setText("继续入库")
+    def _on_add_game(self, app_id: str, game_name: str = ""):
+        """点击卡片上的「入库」按钮"""
+        try:
+            # 检查 DLL 版本是否与当前应用兼容
+            if app_state.get(DLL_VERSION_MISMATCH, False):
+                msg_box = MessageBox(
+                    "DLL 核心版本提示",
+                    "检测到 Steam 目录中的 OpenSteamTool.dll 与当前软件版本不一致。\n"
+                    "建议先在「注入管理」中更新并重新注入，以确保入库的游戏能够正常加载与下载。\n\n"
+                    "是否立即前往更新并注入？",
+                    self.window() or self,
+                )
+                msg_box.yesButton.setText("立即更新")
+                msg_box.cancelButton.setText("继续入库")
+                
+                if msg_box.exec():
+                    self._update_and_inject()
+                    return  # 更新后不继续入库（需要重启 Steam）
             
-            if msg_box.exec():
-                self._update_and_inject()
-                return  # 更新后不继续入库（需要重启 Steam）
-        
-        if self._game_manager.has_game(app_id):
-            InfoBar.warning(
-                "已入库", f"AppID {app_id} 已在游戏库中",
+            if self._game_manager.has_game(app_id):
+                InfoBar.warning(
+                    "已入库", f"AppID {app_id} 已在游戏库中",
+                    parent=self, position=InfoBarPosition.TOP,
+                )
+                return
+
+            # 多源确定 Steam 路径
+            steam_path = self._bridge.get_steam_path() if self._bridge else ""
+            if not steam_path:
+                from core.app_state import app_state, STEAM_PATH
+                steam_path = str(app_state.get(STEAM_PATH, ""))
+            if not steam_path and self._game_manager and getattr(self._game_manager, "_lua_dir", None):
+                try:
+                    candidate = os.path.dirname(os.path.dirname(os.path.abspath(self._game_manager._lua_dir)))
+                    if os.path.isdir(candidate):
+                        steam_path = candidate
+                except Exception:
+                    pass
+            if not steam_path:
+                from core.steam_detector import SteamDetector
+                detected = SteamDetector.detect_steam()
+                if detected and detected.path:
+                    steam_path = detected.path
+
+            if steam_path and os.path.isdir(steam_path):
+                # 确保 Lua 目录正确设置
+                lua_dir = os.path.join(steam_path, "config", "lua")
+                if not self._game_manager.get_lua_dir():
+                    self._game_manager.set_lua_dir(lua_dir)
+            elif not self._game_manager.get_lua_dir():
+                InfoBar.warning(
+                    "未配置 Steam 路径", "请先在「注入管理」页面检测或设置有效的 Steam 路径后再入库",
+                    parent=self, position=InfoBarPosition.TOP, duration=4000,
+                )
+                return
+
+            # 即时入库（先入库，后台拉元数据）
+            self._game_manager.add_game_basic(app_id, game_name)
+            self._mark_cards_added(app_id)
+            if self._bridge and self._bridge.is_deployed():
+                tip_msg = "已加入游戏库，重启 Steam 即可生效"
+            else:
+                tip_msg = "已加入游戏库（提示：在「注入管理」注入并启动 Steam 即可生效）"
+            InfoBar.success(
+                "入库成功", f"AppID {app_id} {game_name or ''} {tip_msg}",
                 parent=self, position=InfoBarPosition.TOP,
             )
-            return
+            self.library_changed.emit()
 
-        steam_path = self._bridge.get_steam_path() if self._bridge else ""
-        if not steam_path or not os.path.isdir(steam_path):
-            InfoBar.warning(
-                "未配置 Steam 路径", "请先在「注入管理」页面检测或设置有效的 Steam 路径后再入库",
-                parent=self, position=InfoBarPosition.TOP, duration=4000,
+            # 后台异步：获取元数据 → 写 Lua → 下载 Manifest（不阻塞 UI）
+            worker = AsyncWorker(self._do_fetch_metadata, app_id, game_name)
+            worker.finished_with_result.connect(
+                lambda r: self._on_metadata_done(app_id, r), Qt.ConnectionType.QueuedConnection
             )
-            return
-
-        # 即时入库（先入库，后台拉元数据）
-        self._game_manager.add_game_basic(app_id, game_name)
-        self._mark_cards_added(app_id)
-        if self._bridge and self._bridge.is_deployed():
-            tip_msg = "已加入游戏库，重启 Steam 即可生效"
-        else:
-            tip_msg = "已加入游戏库（提示：在「注入管理」注入并启动 Steam 即可生效）"
-        InfoBar.success(
-            "入库成功", f"AppID {app_id} {game_name or ''} {tip_msg}",
-            parent=self, position=InfoBarPosition.TOP,
-        )
-        self.library_changed.emit()
-
-        # 后台异步：获取元数据 → 写 Lua → 下载 Manifest（不阻塞 UI）
-        worker = AsyncWorker(self._do_fetch_metadata, app_id, game_name)
-        worker.finished_with_result.connect(
-            lambda r: self._on_metadata_done(app_id, r), Qt.ConnectionType.QueuedConnection
-        )
-        self._register_worker(worker)
-        worker.start()
+            self._register_worker(worker)
+            worker.start()
+        except Exception as e:
+            logger.exception(f"Error adding game {app_id}: {e}")
+            InfoBar.error(
+                "入库失败", f"处理 AppID {app_id} 时发生错误: {e}",
+                parent=self, position=InfoBarPosition.TOP, duration=6000,
+            )
 
     def _mark_cards_added(self, app_id: str):
         for card in self._cards:
@@ -871,37 +905,26 @@ class SearchPage(ScrollArea):
         has_token = result.get("has_access_token", False)
         game_name = result.get("game_name", "")
 
+        # 触发游戏库刷新
+        self.library_changed.emit()
+
         if missing and not has_token:
             missing_str = ", ".join(missing[:3])
             if len(missing) > 3:
                 missing_str += f" 等共 {len(missing)} 个文件"
 
-            # 弹出清单补全引导对话框，不误导用户
-            dialog = MessageBox(
-                "入库成功，检测到需补充清单文件",
-                f"《{game_name or app_id}》入库配置已成功生成（{depot_count} 个 Depot，{depot_keys} 个密钥）。\n\n"
-                "【重要提示】\n"
-                "由于 Steam 安全校验机制，未在 Steam 购买此游戏时，必须在本地拥有清单文件 (.manifest)，"
-                "否则直接在 Steam 中点击下载可能出现网络连接超时或 HTTP 401 错误。\n\n"
-                f"当前尚缺清单：\n• {missing_str}\n\n"
-                "如您已有清单包，请点击「导入清单/ZIP」；如没有，可点击「在线寻找清单」前往社区获取。",
-                self.window() or self,
+            InfoBar.warning(
+                "入库成功（需补充清单）",
+                f"AppID {app_id} 《{game_name or ''}》已生成 Lua 配置（{depot_count} 个 Depot，{depot_keys} 个密钥）。\n"
+                f"提示：当前尚缺清单 {missing_str}。您可在「已入库」页面卡片菜单中点击「导入清单/ZIP」或「在线寻找清单」。",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=7000,
             )
-            dialog.yesButton.setText("📁 导入清单/ZIP")
-            dialog.cancelButton.setText("🔍 在线寻找清单")
-
-            if dialog.exec():
-                self._open_import_manifest_for_game(app_id)
-            else:
-                from core.manifest_resolver import ManifestResolver
-                queries = ManifestResolver.get_search_queries(app_id, game_name)
-                url = queries.get("百度搜索", "")
-                if url:
-                    webbrowser.open(url)
         else:
             InfoBar.success(
-                "入库成功并就绪",
-                f"AppID {app_id} 入库成功（{depot_count} 个 Depot，{depot_keys} 个密钥，清单已全部就绪）。\n"
+                "入库就绪",
+                f"AppID {app_id} 《{game_name or ''}》配置生成完毕（{depot_count} 个 Depot，{depot_keys} 个密钥，清单已全部就绪）。\n"
                 "若 Steam 正在运行，请重启 Steam 即可直接在库中下载安装！",
                 parent=self,
                 position=InfoBarPosition.TOP,

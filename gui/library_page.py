@@ -9,6 +9,9 @@ LibraryPage — 已入库游戏页面
 """
 from __future__ import annotations
 
+import os
+import sys
+
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,

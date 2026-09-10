@@ -6,6 +6,8 @@ GameCard — 游戏卡片组件
 """
 from __future__ import annotations
 
+import os
+import sys
 import webbrowser
 
 from PyQt6.QtCore import Qt, pyqtSignal

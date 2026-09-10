@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -159,16 +160,19 @@ class DLLInjector:
 
         确保 manifest 请求上游指向可用的 wudrm，避免默认 opensteamtool.com 返回 403 Forbidden 导致
         Steam 报告 'Failed to get manifest request code, Access Denied' 及网络下载错误。
+        同时配置 [lua] paths 包含 config/lua 与 config/stplug-in，保证兼容性。
         """
         if not self._steam_path or not os.path.isdir(self._steam_path):
             return False, "Steam 目录未找到"
 
         config_path = os.path.join(self._steam_path, self.CONFIG_FILE)
         stplugin_dir = os.path.join(self._steam_path, "config", "stplug-in")
-        lua_section = ""
-        if os.path.isdir(stplugin_dir):
-            stplugin_posix = stplugin_dir.replace("\\", "/")
-            lua_section = f'\n[lua]\npaths = ["{stplugin_posix}"]\n'
+        lua_dir = os.path.join(self._steam_path, "config", "lua")
+        os.makedirs(stplugin_dir, exist_ok=True)
+        os.makedirs(lua_dir, exist_ok=True)
+        stplugin_posix = stplugin_dir.replace("\\", "/")
+        lua_posix = lua_dir.replace("\\", "/")
+        lua_section = f'\n[lua]\npaths = ["{lua_posix}", "{stplugin_posix}"]\n'
 
         content = (
             "# opensteamtool.toml — OpenSteamTool configuration\n"
@@ -196,7 +200,7 @@ class DLLInjector:
             return False, f"部署 {self.CONFIG_FILE} 失败: {e}"
 
     def deploy_manifest_lua(self) -> tuple[bool, str]:
-        """部署 manifest.lua 到 <steam>/config/lua 目录
+        """部署 manifest.lua 到 <steam>/config/lua 与 <steam>/config/stplug-in 目录
 
         定义 fetch_manifest_code 和 fetch_manifest_code_ex 回调，提供 wudrm -> steamrun 双重解析保障。
         """
@@ -204,8 +208,7 @@ class DLLInjector:
             return False, "Steam 目录未找到"
 
         lua_dir = os.path.join(self._steam_path, self.LUA_DIR_RELATIVE)
-        os.makedirs(lua_dir, exist_ok=True)
-        manifest_lua_path = os.path.join(lua_dir, self.MANIFEST_LUA_FILE)
+        stplugin_dir = os.path.join(self._steam_path, "config", "stplug-in")
 
         content = (
             "-- manifest.lua — OpenSteamTool Manifest Request Code Resolver\n"
@@ -230,9 +233,12 @@ class DLLInjector:
             "end\n"
         )
         try:
-            with open(manifest_lua_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            logger.info(f"Deployed {self.MANIFEST_LUA_FILE} with wudrm/steamrun resolvers")
+            for target_dir in (lua_dir, stplugin_dir):
+                os.makedirs(target_dir, exist_ok=True)
+                manifest_lua_path = os.path.join(target_dir, self.MANIFEST_LUA_FILE)
+                with open(manifest_lua_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+            logger.info(f"Deployed {self.MANIFEST_LUA_FILE} with wudrm/steamrun resolvers to lua and stplug-in")
             return True, f"{self.MANIFEST_LUA_FILE} 部署成功"
         except Exception as e:
             logger.warning(f"Failed to deploy {self.MANIFEST_LUA_FILE}: {e}")

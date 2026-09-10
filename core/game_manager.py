@@ -324,10 +324,10 @@ class LuaGameManager:
         logger.info(f"Parsing Lua file to metadata: {filepath}")
 
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
 
-        except (OSError, UnicodeDecodeError) as e:
+        except OSError as e:
             logger.error(f"Failed to read Lua file {filepath}: {e}")
             return None
 
@@ -526,7 +526,7 @@ class LuaGameManager:
         logger.debug(f"Parsing Lua file: {os.path.basename(path)}")
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
 
             # 从第一行有效注释提取名称
