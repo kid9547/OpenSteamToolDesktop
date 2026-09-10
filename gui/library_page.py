@@ -186,18 +186,26 @@ class LibraryPage(ScrollArea):
     # ---- 页面显示刷新 ----
 
     def _check_injection_required(self) -> bool:
-        """返回 False 表示未注入，应禁止操作"""
-        from core.app_state import app_state, DLL_ACTIVE
-        return bool(app_state.get(DLL_ACTIVE, False))
+        """检查注入状态（不再阻止用户浏览与管理已入库游戏）"""
+        if self._bridge:
+            return self._bridge.is_deployed() or self._bridge.is_connected()
+        return True
 
     def showEvent(self, event):
         """每次切换到此页面时自动刷新"""
         super().showEvent(event)
         self._alive = True
-        if not self._check_injection_required():
-            self._show_not_injected()
-        else:
-            self._load_games_async()
+        self._load_games_async()
+
+        # 如果未注入 DLL，仅给出温和提示，不阻止游戏浏览与管理
+        if self._bridge and not self._bridge.is_deployed():
+            InfoBar.info(
+                "未注入 Steam",
+                "提示：当前尚未注入 Steam，请在「注入管理」完成注入以使游戏在 Steam 中生效",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=4000,
+            )
         
         # 检查 DLL 版本是否不匹配，如果是则显示警告
         if app_state.get(DLL_VERSION_MISMATCH):
@@ -210,12 +218,8 @@ class LibraryPage(ScrollArea):
             )
 
     def _show_not_injected(self):
-        """未注入状态展示"""
-        self._clear_list()
-        self.refresh_btn.setEnabled(False)
-        self.empty_label.setVisible(True)
-        self.empty_label.setText("请先在「注入管理」页面完成 Steam 注入与激活")
-        self.stats_label.setText("")
+        """未注入状态展示（兼容保留）"""
+        self._load_games_async()
 
 
     # ---- DLL 版本检查 ----

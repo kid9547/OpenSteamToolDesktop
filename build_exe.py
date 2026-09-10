@@ -215,7 +215,15 @@ def main():
     parser.add_argument("--clean", action="store_true", help="Clean build artifacts only")
     parser.add_argument("--nuitka", action="store_true", help="Use Nuitka (C++ compile, stronger protection)")
     parser.add_argument("--no-zip", action="store_true", help="Skip creating zip package after build")
+    parser.add_argument("--with-accelerator", action="store_true", help="Include 科学加速 module in build (default: False/excluded)")
     args = parser.parse_args()
+
+    if args.with_accelerator:
+        os.environ["ENABLE_ACCELERATOR"] = "1"
+        print("Build configuration: ENABLE_ACCELERATOR=1 (科学加速功能已包含)")
+    else:
+        os.environ["ENABLE_ACCELERATOR"] = "0"
+        print("Build configuration: ENABLE_ACCELERATOR=0 (科学加速功能已排除/精简)")
 
     if args.clean:
         clean()

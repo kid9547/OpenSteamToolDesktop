@@ -283,6 +283,15 @@ class SteamBridge:
             return ""
         return os.path.join(self._steam_path, "config", "lua")
 
+    def get_lua_dir(self) -> str:
+        """获取当前使用的 Lua 配置目录（优先使用存在的 stplug-in，否则回退 config/lua）"""
+        if self._steam_path:
+            stplugin = os.path.join(self._steam_path, "config", "stplug-in")
+            if os.path.isdir(stplugin):
+                return stplugin
+            return os.path.join(self._steam_path, "config", "lua")
+        return self._lua_dir or ""
+
     def redetect_steam(self):
         """重新检测 Steam"""
         self._detect_steam()

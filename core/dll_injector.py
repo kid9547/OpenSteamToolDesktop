@@ -173,6 +173,8 @@ class DLLInjector:
         content = (
             "# opensteamtool.toml — OpenSteamTool configuration\n"
             "# Managed by OpenSteamToolDesktop\n\n"
+            "[log]\n"
+            'level = "info"\n\n'
             "[manifest]\n"
             "# 默认 opensteamtool.com 存在 Cloudflare 拦截 (403)，因此配置国内/国际通用的 wudrm\n"
             'url = "wudrm"\n'
@@ -266,23 +268,58 @@ class DLLInjector:
                 message=f"创建 Lua 目录失败: {e}",
             )
 
-    @staticmethod
-    def _is_module_loaded_in_steam(target_dll: str) -> bool:
+    def _is_module_loaded_in_steam(self, target_dll: str) -> bool:
         """检查指定 DLL 是否可能已加载到 Steam 中
 
-        通过检查 Steam 日志目录中的日志文件来推断注入状态，
-        避免使用进程模块枚举（会触发杀毒软件误报）。
+        通过检查特征缓存、文件锁定状态与模块列表推断注入状态。
         """
+        if not self._steam_path:
+            return False
+
+        # 检查特征缓存（OpenSteamTool 生成的 hook 特征缓存，说明曾成功加载或正被使用）
+        pattern_dir = os.path.join(self._steam_path, self.LOG_DIR, "pattern")
+        ipc_dir = os.path.join(self._steam_path, self.LOG_DIR, "ipc")
+        for d in (pattern_dir, ipc_dir):
+            if os.path.isdir(d):
+                try:
+                    for root, _, files in os.walk(d):
+                        if any(f.endswith(".toml") for f in files):
+                            return True
+                except Exception:
+                    pass
+
+        # 检查 DLL 文件是否被正在运行的进程锁定占用
+        dll_file = os.path.join(self._steam_path, target_dll)
+        if os.path.isfile(dll_file):
+            try:
+                # 尝试以读写模式打开；若被 steam.exe 加载，Windows 会禁止以写模式打开 (PermissionError)
+                with open(dll_file, "r+b"):
+                    pass
+            except (PermissionError, OSError):
+                return True
+
+        # 检查 tasklist 模块枚举
+        try:
+            res = subprocess.run(
+                ["tasklist", "/fi", "imagename eq steam.exe", "/m", target_dll],
+                capture_output=True, text=True, timeout=3,
+            )
+            if "steam.exe" in res.stdout.lower():
+                return True
+        except Exception:
+            pass
+
         return False
 
     def verify_injection(self) -> InjectResult:
         """验证 OpenSteamTool 是否已成功注入
 
         验证方式：
-        1. 模块已加载 — 检查 DLL 是否已注入到 Steam 进程
-        2. 日志已生成 — 检查 <steam>/opensteamtool/main.log 是否存在且有内容
-        3. DLL 已部署 — 若 DLL 已复制但未检测到运行状态，提示重启 Steam
-        4. DLL 未部署 — 验证失败
+        1. 模块已加载 — 检查 DLL 是否已注入到 Steam 进程或特征缓存已建立
+        2. 日志已生成 — 检查 <steam>/opensteamtool/main.log 等是否存在且有内容
+        3. 特征缓存 — 检查 pattern / ipc 是否存在生成特征
+        4. DLL 已部署 — 若 DLL 已复制但未检测到运行状态，提示重启 Steam
+        5. DLL 未部署 — 验证失败
 
         Returns:
             验证结果
@@ -301,14 +338,43 @@ class DLLInjector:
             )
 
         # 2. 检查日志文件是否存在
-        log_file = os.path.join(self._steam_path, self.LOG_DIR, "main.log")
-        if os.path.isfile(log_file) and os.path.getsize(log_file) > 0:
+        log_files = [
+            os.path.join(self._steam_path, self.LOG_DIR, "main.log"),
+            os.path.join(self._steam_path, self.LOG_DIR, "ipc.log"),
+            os.path.join(self._steam_path, self.LOG_DIR, "manifest.log"),
+            os.path.join(self._steam_path, self.LOG_DIR, "netpacket.log"),
+            os.path.join(self._steam_path, "opensteamtool.log"),
+            os.path.join(self._steam_path, "logs", "main.log"),
+        ]
+        for lf in log_files:
+            if os.path.isfile(lf) and os.path.getsize(lf) > 0:
+                return InjectResult(
+                    status=InjectStatus.SUCCESS,
+                    message="检测到 OpenSteamTool 运行日志，注入已生效",
+                )
+
+        # 3. 检查特征缓存
+        pattern_dir = os.path.join(self._steam_path, self.LOG_DIR, "pattern")
+        ipc_dir = os.path.join(self._steam_path, self.LOG_DIR, "ipc")
+        has_cache = False
+        for d in (pattern_dir, ipc_dir):
+            if os.path.isdir(d):
+                try:
+                    for root, _, files in os.walk(d):
+                        if any(f.endswith(".toml") for f in files):
+                            has_cache = True
+                            break
+                except Exception:
+                    pass
+            if has_cache:
+                break
+        if has_cache:
             return InjectResult(
                 status=InjectStatus.SUCCESS,
-                message="检测到 OpenSteamTool 运行日志，注入已生效",
+                message="检测到 OpenSteamTool 核心特征缓存，注入已激活",
             )
 
-        # 3. 检查 DLL 是否已部署到 Steam 目录
+        # 4. 检查 DLL 是否已部署到 Steam 目录
         all_deployed, missing = self.check_dlls_deployed()
         if all_deployed:
             return InjectResult(
@@ -316,7 +382,7 @@ class DLLInjector:
                 message="DLL 已部署但尚未生效，请重启 Steam 以激活注入",
             )
 
-        # 4. DLL 未完全部署
+        # 5. DLL 未完全部署
         return InjectResult(
             status=InjectStatus.VERIFICATION_FAILED,
             message=f"DLL 未完全部署，缺失: {', '.join(missing)}",

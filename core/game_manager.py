@@ -286,6 +286,8 @@ class LuaGameManager:
                 toml_content = (
                     "# opensteamtool.toml — OpenSteamTool configuration\n"
                     "# Managed by OpenSteamToolDesktop\n\n"
+                    "[log]\n"
+                    'level = "info"\n\n'
                     "[manifest]\n"
                     'url = "wudrm"\n'
                     "timeout_resolve_ms = 5000\n"

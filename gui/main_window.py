@@ -65,7 +65,7 @@ class MainWindow(MSFluentWindow):
         from gui.inject_page import InjectPage
         from gui.search_page import SearchPage
         from gui.library_page import LibraryPage
-        from gui.accelerate_page import AcceleratePage
+        from config import ENABLE_ACCELERATOR_PAGE
 
         # 创建页面
         self.home_page = HomePage(
@@ -81,8 +81,12 @@ class MainWindow(MSFluentWindow):
 
         self.library_page = LibraryPage(game_manager, bridge=bridge, parent=self)
 
-        self.accelerate_page = AcceleratePage(parent=self)
-        self.accelerate_page.setObjectName("acceleratePage")
+        if ENABLE_ACCELERATOR_PAGE:
+            from gui.accelerate_page import AcceleratePage
+            self.accelerate_page = AcceleratePage(parent=self)
+            self.accelerate_page.setObjectName("acceleratePage")
+        else:
+            self.accelerate_page = None
 
         # 连接首页 DLL 检查信号
         self.home_page.dll_check_needed.connect(self._check_dll_version_on_startup)
@@ -101,7 +105,10 @@ class MainWindow(MSFluentWindow):
         self._inject_nav_btn = self.addSubInterface(self.inject_page, FluentIcon.DOWNLOAD, "注入管理")
         self._search_nav_btn = self.addSubInterface(self.search_page, FluentIcon.SEARCH, "搜索入库")
         self._library_nav_btn = self.addSubInterface(self.library_page, FluentIcon.LIBRARY, "游戏库")
-        self._accelerate_nav_btn = self.addSubInterface(self.accelerate_page, FluentIcon.SPEED_HIGH, "科学加速")
+        if self.accelerate_page:
+            self._accelerate_nav_btn = self.addSubInterface(self.accelerate_page, FluentIcon.SPEED_HIGH, "科学加速")
+        else:
+            self._accelerate_nav_btn = None
 
         # 底部：重启 Steam 按钮
         self._restart_nav_item = self.navigationInterface.addItem(

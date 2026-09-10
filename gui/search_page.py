@@ -265,17 +265,6 @@ class SearchPage(ScrollArea):
         self._build_results_section()
         self._build_recommendations()
 
-        # 注入状态警告横幅
-        self._inject_warning = InfoBar.warning(
-            "未注入 Steam",
-            "请先在「注入管理」页面完成 Steam 注入与激活，入库功能暂不可用",
-            parent=self,
-            position=InfoBarPosition.TOP,
-            duration=-1,  # 不自动消失
-            isClosable=False,
-        )
-        self._inject_warning.setVisible(False)
-
         self._main_layout.addStretch()
 
         # 监听全局注入状态变化
@@ -644,8 +633,6 @@ class SearchPage(ScrollArea):
         # 已入库的标记
         if self._game_manager.has_game(app_id):
             card.mark_added()
-        elif not self._is_injected():
-            card.add_btn.setEnabled(False)
 
         card.add_requested.connect(self._on_add_game)
         self._cards.append(card)
@@ -724,8 +711,6 @@ class SearchPage(ScrollArea):
             card.add_requested.connect(self._on_add_game)
             if self._game_manager.has_game(appid):
                 card.mark_added()
-            elif not self._is_injected():
-                card.add_btn.setEnabled(False)
             self._rec_cards.append(card)
             self._rec_layout.addWidget(card)
             QTimer.singleShot(300 + idx * 150, card.load_cover_async)
@@ -739,8 +724,6 @@ class SearchPage(ScrollArea):
             card.add_requested.connect(self._on_add_game)
             if self._game_manager.has_game(appid):
                 card.mark_added()
-            elif not self._is_injected():
-                card.add_btn.setEnabled(False)
             self._rec_cards.append(card)
             self._rec_layout.addWidget(card)
             QTimer.singleShot(300 + idx * 300, card.load_cover_async)
@@ -769,18 +752,23 @@ class SearchPage(ScrollArea):
             )
             return
 
-        if not self._is_injected():
+        steam_path = self._bridge.get_steam_path() if self._bridge else ""
+        if not steam_path or not os.path.isdir(steam_path):
             InfoBar.warning(
-                "未注入", "请先在「注入管理」页面完成 Steam 注入与激活后再入库",
-                parent=self, position=InfoBarPosition.TOP, duration=3000,
+                "未配置 Steam 路径", "请先在「注入管理」页面检测或设置有效的 Steam 路径后再入库",
+                parent=self, position=InfoBarPosition.TOP, duration=4000,
             )
             return
 
         # 即时入库（先入库，后台拉元数据）
         self._game_manager.add_game_basic(app_id, game_name)
         self._mark_cards_added(app_id)
+        if self._bridge and self._bridge.is_deployed():
+            tip_msg = "已加入游戏库，重启 Steam 即可生效"
+        else:
+            tip_msg = "已加入游戏库（提示：在「注入管理」注入并启动 Steam 即可生效）"
         InfoBar.success(
-            "入库成功", f"AppID {app_id} {game_name or ''} 已加入游戏库",
+            "入库成功", f"AppID {app_id} {game_name or ''} {tip_msg}",
             parent=self, position=InfoBarPosition.TOP,
         )
         self.library_changed.emit()
@@ -1015,24 +1003,21 @@ class SearchPage(ScrollArea):
     # ── 注入状态管理 ──────────────────────────────────────────
 
     def _is_injected(self) -> bool:
-        """当前 Steam 是否已注入激活"""
+        """当前 Steam 是否已部署或连接"""
         if self._bridge is None:
             return False
-        return self._bridge.is_connected()
+        return self._bridge.is_deployed() or self._bridge.is_connected()
 
     def _on_injection_changed(self):
         """全局注入状态变化时更新 UI"""
-        injected = self._is_injected()
-        self._inject_warning.setVisible(not injected)
         self._update_all_card_buttons()
 
     def _update_all_card_buttons(self):
-        """统一启用/禁用所有卡片的入库按钮"""
-        injected = self._is_injected()
+        """更新所有卡片的入库按钮状态"""
         for card in self._cards:
-            card.add_btn.setEnabled(injected and not card._added)
+            card.add_btn.setEnabled(not card._added)
         for card in self._rec_cards:
-            card.add_btn.setEnabled(injected and not card._added)
+            card.add_btn.setEnabled(not card._added)
 
 
     # ---- DLL 版本检查 ----

@@ -14,6 +14,10 @@ from pathlib import Path
 APP_NAME: str = "OpenSteamToolDesktop"
 APP_VERSION: str = "1.0.4"
 
+# ============ 功能模块开关 ============
+# 科学加速页面开关（默认关闭；可通过环境变量 ENABLE_ACCELERATOR=1 或构建参数 --with-accelerator 开启）
+ENABLE_ACCELERATOR_PAGE: bool = os.getenv("ENABLE_ACCELERATOR", "0").lower() in ("1", "true", "yes")
+
 # ============ 配置路径 ============
 CONFIG_DIR: str = str(Path.home() / f".{APP_NAME}")
 os.makedirs(CONFIG_DIR, exist_ok=True)

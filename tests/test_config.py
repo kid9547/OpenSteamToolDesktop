@@ -21,6 +21,9 @@ class TestAppInfo(unittest.TestCase):
         for p in parts:
             self.assertTrue(p.isdigit())
 
+    def test_accelerator_page_flag(self):
+        self.assertIsInstance(config.ENABLE_ACCELERATOR_PAGE, bool)
+
 
 class TestConfigPaths(unittest.TestCase):
     """配置路径测试"""

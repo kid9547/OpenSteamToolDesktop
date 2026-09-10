@@ -287,11 +287,19 @@ class InjectPage(ScrollArea):
             self.dll_status_label.setStyleSheet("color: #f5222d;")
 
         # 注入激活状态
+        steam_running = self._detector.is_steam_running()
         if dll_active:
             self.inject_status_label.setText("✓ OpenSteamTool 已激活")
             self.inject_status_label.setStyleSheet("color: #52c41a;")
+        elif dll_deployed:
+            if steam_running:
+                self.inject_status_label.setText("✓ OpenSteamTool 已激活（运行中）")
+                self.inject_status_label.setStyleSheet("color: #52c41a;")
+            else:
+                self.inject_status_label.setText("○ OpenSteamTool 待激活（启动 Steam 即可生效）")
+                self.inject_status_label.setStyleSheet("color: #1890ff;")
         else:
-            self.inject_status_label.setText("✗ OpenSteamTool 未激活")
+            self.inject_status_label.setText("✗ OpenSteamTool 未注入")
             self.inject_status_label.setStyleSheet("color: #ff9800;")
 
         # DLL 版本号（新增）
@@ -565,24 +573,6 @@ class InjectPage(ScrollArea):
         # 刷新状态
         QTimer.singleShot(500, self._update_status)
 
-    def _on_open_steam_dir(self):
-        """打开 Steam 安装目录"""
-        steam_path = self._bridge.get_steam_path()
-        if not steam_path or not os.path.exists(steam_path):
-            InfoBar.error(
-                "错误", "未检测到 Steam 安装路径，请检查 Steam 是否已安装或在设置中手动指定路径。",
-                parent=self, position=InfoBarPosition.TOP,
-            )
-            return
-
-        try:
-            os.startfile(steam_path)
-        except Exception as e:
-            InfoBar.error(
-                "错误", str(e),
-                parent=self, position=InfoBarPosition.TOP,
-            )
-
     # ---- 主题通知 ---
 
     def _update_dll_version_display(self):
@@ -647,8 +637,10 @@ class InjectPage(ScrollArea):
     def _on_open_steam_dir(self):
         """打开 Steam 安装目录"""
         steam_path = self._bridge.get_steam_path() if self._bridge else ""
-        if steam_path and os.path.exists(steam_path):
-            self._bridge.open_directory(steam_path)
+        if steam_path:
+            success, msg = self._bridge.open_directory(steam_path)
+            if not success:
+                InfoBar.warning("打开失败", msg, parent=self, position=InfoBarPosition.TOP)
         else:
             InfoBar.warning("提示", "未找到有效的 Steam 安装目录", parent=self, position=InfoBarPosition.TOP)
 
@@ -656,25 +648,33 @@ class InjectPage(ScrollArea):
         """打开 Lua 配置目录"""
         if self._bridge:
             d = self._bridge.get_lua_dir()
-            self._bridge.open_directory(d)
+            success, msg = self._bridge.open_directory(d)
+            if not success:
+                InfoBar.warning("打开失败", msg, parent=self, position=InfoBarPosition.TOP)
 
     def _on_open_depotcache_dir(self):
         """打开清单缓存目录"""
         if self._bridge:
             d = self._bridge.get_depotcache_dir()
-            self._bridge.open_directory(d)
+            success, msg = self._bridge.open_directory(d)
+            if not success:
+                InfoBar.warning("打开失败", msg, parent=self, position=InfoBarPosition.TOP)
 
     def _on_open_plugin_dir(self):
         """打开插件目录"""
         if self._bridge:
             d = self._bridge.get_stplugin_dir()
-            self._bridge.open_directory(d)
+            success, msg = self._bridge.open_directory(d)
+            if not success:
+                InfoBar.warning("打开失败", msg, parent=self, position=InfoBarPosition.TOP)
 
     def _on_open_download_dir(self):
         """打开下载缓存目录"""
         if self._bridge:
             d = self._bridge.get_downloading_dir()
-            self._bridge.open_directory(d)
+            success, msg = self._bridge.open_directory(d)
+            if not success:
+                InfoBar.warning("打开失败", msg, parent=self, position=InfoBarPosition.TOP)
 
     def _on_clean_download_cache(self):
         """一键清理 Steam 异常下载残留缓存与卡死状态"""
