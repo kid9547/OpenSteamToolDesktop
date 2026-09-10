@@ -95,6 +95,25 @@ class SteamDetector:
         steam_exe_path = os.path.join(normalized_path, self.STEAM_EXE)
         return os.path.isfile(steam_exe_path)
     
+    def _check_registry(self) -> Optional[str]:
+        """从 Windows 注册表读取 Steam 安装路径字符串"""
+        registry_locations = [
+            (winreg.HKEY_CURRENT_USER, self.REG_PATH_64BIT),
+            (winreg.HKEY_LOCAL_MACHINE, self.REG_PATH_64BIT),
+            (winreg.HKEY_LOCAL_MACHINE, self.REG_PATH_32BIT),
+        ]
+        
+        for root_key, sub_path in registry_locations:
+            try:
+                with winreg.OpenKey(root_key, sub_path, 0, winreg.KEY_READ) as key:
+                    install_path, _ = winreg.QueryValueEx(key, self.REG_VALUE_NAME)
+                    if install_path:
+                        return install_path
+            except OSError:
+                continue
+        
+        return None
+
     def _detect_from_registry(self) -> Optional[str]:
         """从 Windows 注册表检测 Steam 安装路径
         
@@ -106,21 +125,9 @@ class SteamDetector:
         Returns:
             有效的 Steam 安装路径，未找到返回 None
         """
-        registry_locations = [
-            (winreg.HKEY_CURRENT_USER, self.REG_PATH_64BIT),
-            (winreg.HKEY_LOCAL_MACHINE, self.REG_PATH_64BIT),
-            (winreg.HKEY_LOCAL_MACHINE, self.REG_PATH_32BIT),
-        ]
-        
-        for root_key, sub_path in registry_locations:
-            try:
-                with winreg.OpenKey(root_key, sub_path, 0, winreg.KEY_READ) as key:
-                    install_path, _ = winreg.QueryValueEx(key, self.REG_VALUE_NAME)
-                    if install_path and self._verify_steam_path(install_path):
-                        return install_path
-            except OSError:
-                continue
-        
+        install_path = self._check_registry()
+        if install_path and self._verify_steam_path(install_path):
+            return install_path
         return None
     
     def _detect_from_default_paths(self) -> Optional[str]:

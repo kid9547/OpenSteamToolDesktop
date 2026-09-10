@@ -53,6 +53,8 @@ class GameInfo:
     has_manifest: bool = False
     has_appticket: bool = False
     lua_path: str = ""
+    manifest_ready: bool = True
+    missing_manifests: list[str] = field(default_factory=list)
 
 
 class LuaGameManager:
@@ -548,6 +550,40 @@ class LuaGameManager:
             if re.search(r'\bsetappticket\s*\(', content_lower):
                 info.has_appticket = True
                 logger.debug(f"  Found: setAppTicket")
+
+            # 诊断清单是否已就绪于 depotcache
+            manifest_matches = re.findall(
+                r'setmanifestid\s*\(\s*(\d+)\s*,\s*["\']?(\d+)["\']?(?:\s*,\s*[^)]*)?\)',
+                content,
+                re.IGNORECASE,
+            )
+            if manifest_matches:
+                steam_root = ""
+                if self._lua_dir:
+                    try:
+                        steam_root = os.path.dirname(os.path.dirname(os.path.abspath(self._lua_dir)))
+                    except Exception:
+                        pass
+                depotcache_dir = os.path.join(steam_root, "depotcache") if steam_root else ""
+                config_depotcache_dir = os.path.join(steam_root, "config", "depotcache") if steam_root else ""
+
+                missing = []
+                for did, gid in manifest_matches:
+                    fn = f"{did}_{gid}.manifest"
+                    p1 = os.path.join(depotcache_dir, fn) if depotcache_dir else ""
+                    p2 = os.path.join(config_depotcache_dir, fn) if config_depotcache_dir else ""
+                    has_file = (
+                        (p1 and os.path.isfile(p1) and os.path.getsize(p1) > 0)
+                        or (p2 and os.path.isfile(p2) and os.path.getsize(p2) > 0)
+                    )
+                    if not has_file:
+                        missing.append(f"{did}_{gid}")
+
+                info.missing_manifests = missing
+                info.manifest_ready = (len(missing) == 0)
+            else:
+                info.manifest_ready = True
+                info.missing_manifests = []
 
         except (OSError, UnicodeDecodeError) as e:
             logger.error(f"Failed to parse Lua file {path}: {e}")

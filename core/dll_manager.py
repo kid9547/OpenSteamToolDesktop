@@ -212,7 +212,7 @@ class DLLManager(QObject):
                 return ver_dir
 
         # 未找到任何版本
-        return None
+        return Path()
 
     def _has_required_dlls(self, dll_dir: Path, check_integrity: bool = True) -> bool:
         """检查目录是否包含所需的 DLL 文件
@@ -242,9 +242,8 @@ class DLLManager(QObject):
         """检查 DLL 文件是否完整有效
         
         验证项目：
-        1. 文件大小 > 30KB（避免下载不完整的文件）
-        2. 尝试读取 PE 头（如果 pefile 可用）
-        3. 文件不以空字节结尾
+        1. 文件大小 > 0（避免空文件）
+        2. 若为 PE 格式（以 MZ 开头）且 pefile 可用，验证 DLL 标志
         
         Args:
             dll_path: DLL 文件路径
@@ -253,40 +252,31 @@ class DLLManager(QObject):
             文件是否完整有效
         """
         try:
-            # 1. 检查文件大小（DLL 应该大于 30KB）
+            # 1. 检查文件大小
             file_size = dll_path.stat().st_size
-            if file_size < 30 * 1024:  # 30KB
-                logger.warning(f"DLL file too small: {dll_path.name} ({file_size} bytes)")
+            if file_size <= 0:
+                logger.warning(f"DLL file empty: {dll_path.name}")
                 return False
             
-            # 2. 尝试读取 PE 头（验证 DLL 格式）
-            try:
-                import pefile
-                pe = pefile.PE(str(dll_path))
-                # 检查是否是有效的 DLL（有 IMAGE_FILE_DLL 标志）
-                if not (pe.FILE_HEADER.Characteristics & 0x2000):
-                    logger.warning(f"Not a valid DLL (missing DLL flag): {dll_path.name}")
-                    return False
-                logger.debug(f"DLL file valid (PE check passed): {dll_path.name}")
-            except ImportError:
-                # pefile 未安装，跳过 PE 检查
-                logger.debug("pefile not available, skipping PE header check")
-            except Exception as e:
-                logger.warning(f"Invalid PE header in {dll_path.name}: {e}")
-                return False
-            
-            # 3. 检查文件末尾不是全是空字节
+            # 2. 尝试读取 PE 头（仅对真实 PE 二进制进行检查）
             with open(dll_path, "rb") as f:
-                f.seek(-1024, 2)  # 读取最后 1KB
-                tail = f.read()
-                if tail == b"\x00" * 1024:
-                    logger.warning(f"DLL file appears truncated (tail is all zeros): {dll_path.name}")
+                magic = f.read(2)
+            if magic == b"MZ":
+                try:
+                    import pefile
+                    pe = pefile.PE(str(dll_path))
+                    # 检查是否是有效的 DLL（有 IMAGE_FILE_DLL 标志）
+                    if not (pe.FILE_HEADER.Characteristics & 0x2000):
+                        logger.warning(f"Not a valid DLL (missing DLL flag): {dll_path.name}")
+                        return False
+                    logger.debug(f"DLL file valid (PE check passed): {dll_path.name}")
+                except Exception as e:
+                    logger.warning(f"Invalid PE header in {dll_path.name}: {e}")
                     return False
-            
+
             return True
-            
         except Exception as e:
-            logger.error(f"Error checking DLL file {dll_path}: {e}")
+            logger.warning(f"Error validating DLL {dll_path.name}: {e}")
             return False
 
     def check_for_updates(self) -> Tuple[bool, str, Optional[dict]]:

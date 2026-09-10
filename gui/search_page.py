@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import re
 import urllib.parse
+import webbrowser
 
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QSizePolicy
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QSizePolicy, QFileDialog
 from PyQt6.QtGui import QFont, QPixmap, QIcon
 
 from qfluentwidgets import (
@@ -812,13 +813,51 @@ class SearchPage(ScrollArea):
 
             self._game_manager.add_game_with_metadata(metadata)
 
-            logger.info(f"Metadata fetch complete for {app_id} ({metadata.name})")
+            # 尝试自动化清单解析与获取流水线
+            from core.manifest_resolver import ManifestResolver
+            steam_dir = ""
+            if self._bridge:
+                steam_dir = self._bridge.get_steam_path()
+            elif self._game_manager and getattr(self._game_manager, "_steam_path", None):
+                steam_dir = self._game_manager._steam_path
+            elif self._game_manager and getattr(self._game_manager, "_lua_dir", None):
+                try:
+                    steam_dir = os.path.dirname(os.path.dirname(os.path.abspath(self._game_manager._lua_dir)))
+                except Exception:
+                    pass
+
+            depots_tuple = [(d.depot_id, d.manifest_gid, d.size) for d in metadata.depots if d.manifest_gid]
+            if steam_dir:
+                try:
+                    resolver = ManifestResolver(steam_dir)
+                    resolver.resolve_manifests(app_id, depots_tuple)
+                    resolver.close()
+                except Exception as e:
+                    logger.warning(f"Auto manifest resolution error for {app_id}: {e}")
+
+            # 检查是否有缺少本地清单的 depot
+            missing_manifests = []
+            if steam_dir:
+                depotcache_dir = os.path.join(steam_dir, "depotcache")
+                config_depotcache_dir = os.path.join(steam_dir, "config", "depotcache")
+                for d in metadata.depots:
+                    if d.manifest_gid:
+                        mf_name = f"{d.depot_id}_{d.manifest_gid}.manifest"
+                        in_dc = os.path.isfile(os.path.join(depotcache_dir, mf_name)) and os.path.getsize(os.path.join(depotcache_dir, mf_name)) > 0
+                        in_cdc = os.path.isfile(os.path.join(config_depotcache_dir, mf_name)) and os.path.getsize(os.path.join(config_depotcache_dir, mf_name)) > 0
+                        if not in_dc and not in_cdc:
+                            missing_manifests.append(mf_name)
+
+            logger.info(f"Metadata fetch complete for {app_id} ({metadata.name}), missing manifests: {len(missing_manifests)}")
             return {
+                "app_id": app_id,
+                "game_name": metadata.name or game_name,
                 "depots": len(metadata.depots),
                 "dlcs": len(metadata.dlc_ids),
                 "manifest_count": sum(1 for d in metadata.depots if d.manifest_gid),
                 "depot_keys": sum(1 for d in metadata.depots if d.depot_key),
                 "has_access_token": bool(metadata.access_token),
+                "missing_manifests": missing_manifests,
             }
         except Exception as e:
             logger.warning(f"Metadata fetch failed for {app_id}: {e}")
@@ -833,19 +872,81 @@ class SearchPage(ScrollArea):
 
     def _on_metadata_done(self, app_id: str, result: dict | None):
         """后台元数据获取完成"""
-        if result:
-            logger.info(f"Game {app_id} Lua + Manifest ready: {result}")
-            depot_count = result.get("depots", 0)
-            manifest_count = result.get("manifest_count", 0)
-            depot_keys = result.get("depot_keys", 0)
+        if not result:
+            return
+
+        logger.info(f"Game {app_id} Lua + Manifest ready: {result}")
+        depot_count = result.get("depots", 0)
+        manifest_count = result.get("manifest_count", 0)
+        depot_keys = result.get("depot_keys", 0)
+        missing = result.get("missing_manifests", [])
+        has_token = result.get("has_access_token", False)
+        game_name = result.get("game_name", "")
+
+        if missing and not has_token:
+            missing_str = ", ".join(missing[:3])
+            if len(missing) > 3:
+                missing_str += f" 等共 {len(missing)} 个文件"
+
+            # 弹出清单补全引导对话框，不误导用户
+            dialog = MessageBox(
+                "入库成功，检测到需补充清单文件",
+                f"《{game_name or app_id}》入库配置已成功生成（{depot_count} 个 Depot，{depot_keys} 个密钥）。\n\n"
+                "【重要提示】\n"
+                "由于 Steam 安全校验机制，未在 Steam 购买此游戏时，必须在本地拥有清单文件 (.manifest)，"
+                "否则直接在 Steam 中点击下载可能出现网络连接超时或 HTTP 401 错误。\n\n"
+                f"当前尚缺清单：\n• {missing_str}\n\n"
+                "如您已有清单包，请点击「导入清单/ZIP」；如没有，可点击「在线寻找清单」前往社区获取。",
+                self.window() or self,
+            )
+            dialog.yesButton.setText("📁 导入清单/ZIP")
+            dialog.cancelButton.setText("🔍 在线寻找清单")
+
+            if dialog.exec():
+                self._open_import_manifest_for_game(app_id)
+            else:
+                from core.manifest_resolver import ManifestResolver
+                queries = ManifestResolver.get_search_queries(app_id, game_name)
+                url = queries.get("百度搜索", "")
+                if url:
+                    webbrowser.open(url)
+        else:
             InfoBar.success(
-                "入库配置就绪",
-                f"AppID {app_id} 入库成功（{depot_count} 个 Depot，{depot_keys} 个密钥，{manifest_count} 个清单已绑定）。"
-                "若 Steam 正在运行，请重启 Steam 以生效并开始下载。",
+                "入库成功并就绪",
+                f"AppID {app_id} 入库成功（{depot_count} 个 Depot，{depot_keys} 个密钥，清单已全部就绪）。\n"
+                "若 Steam 正在运行，请重启 Steam 即可直接在库中下载安装！",
                 parent=self,
                 position=InfoBarPosition.TOP,
                 duration=6000,
             )
+
+    def _open_import_manifest_for_game(self, app_id: str):
+        """打开文件选择器导入此游戏的清单或 zip 包"""
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            f"为 AppID {app_id} 导入清单或配置文件",
+            "",
+            "Steam 资源文件 (*.manifest *.lua *.zip);;所有文件 (*.*)",
+        )
+        if files:
+            steam_dir = ""
+            if self._bridge:
+                steam_dir = self._bridge.get_steam_path()
+            elif self._game_manager and getattr(self._game_manager, "_steam_path", None):
+                steam_dir = self._game_manager._steam_path
+            elif self._game_manager and getattr(self._game_manager, "_lua_dir", None):
+                try:
+                    steam_dir = os.path.dirname(os.path.dirname(os.path.abspath(self._game_manager._lua_dir)))
+                except Exception:
+                    pass
+
+            from core.import_service import ImportService
+            service = ImportService(steam_dir, self._game_manager)
+            res = service.import_paths(files)
+            if res.success:
+                InfoBar.success("导入成功", res.summary(), parent=self, position=InfoBarPosition.TOP, duration=5000)
+            else:
+                InfoBar.error("导入失败", res.summary(), parent=self, position=InfoBarPosition.TOP, duration=5000)
 
     # ── Worker 管理 ──────────────────────────────────────────
 

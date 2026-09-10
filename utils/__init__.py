@@ -22,8 +22,21 @@ Public API
 
 from __future__ import annotations
 
-from utils.async_worker import AsyncWorker
-from utils.download_cover import CoverCache, download_cover
+try:
+    import utils.async_worker
+    from utils.async_worker import AsyncWorker
+except ImportError:
+    AsyncWorker = None  # type: ignore
+
+try:
+    import utils.download_cover
+    from utils.download_cover import CoverCache, download_cover
+    import sys
+    sys.modules[__name__].download_cover = sys.modules["utils.download_cover"]
+except ImportError:
+    CoverCache = None  # type: ignore
+    download_cover = None  # type: ignore
+
 from utils.http_client import get, get_bytes, get_json, get_text, is_404_cached
 from utils.logger import setup_logger
 

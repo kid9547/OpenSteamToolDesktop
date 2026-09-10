@@ -28,4 +28,5 @@ Thumbs.db
 *.log
 .pytest_cache/
 OpenSteamToolDesktop-*.zip
+OpenSteamToolDesktop-*/
 precompiled_release/

@@ -69,28 +69,26 @@ class GitHubReleases(QObject):
             "Connection": "keep-alive",
         })
 
-    def get_latest_release_info(self) -> Optional[dict]:
-        """获取最新 release 信息（通过爬取 releases 页面）
+    def _parse_release_data(self, data: dict) -> dict:
+        """解析 GitHub API 返回的 release 数据"""
+        tag_name = data.get("tag_name", "")
+        assets = [
+            a for a in data.get("assets", [])
+            if isinstance(a, dict) and a.get("name", "").endswith(".zip")
+        ]
+        return {
+            "version": tag_name,
+            "tag_name": tag_name,
+            "published_at": data.get("published_at", ""),
+            "body": data.get("body", ""),
+            "html_url": data.get("html_url", ""),
+            "assets": assets,
+        }
 
-        Returns:
-            包含版本信息的字典，如果失败则返回 None
-            {
-                "version": "v1.2.3",
-                "tag_name": "v1.2.3",
-                "published_at": "",
-                "assets": [
-                    {
-                        "name": "OpenSteamTool-x64.zip",
-                        "browser_download_url": "...",
-                        "size": 0,
-                    }
-                ],
-            }
-        """
+    def _scrape_releases_page(self) -> Optional[dict]:
+        """爬取 GitHub releases 页面获取最新版本信息（降级策略）"""
         try:
-            logger.info("Fetching latest release info from GitHub releases page...")
-
-            # 访问 releases 页面
+            logger.info("Scraping releases page...")
             resp = self._session.get(
                 OPENSTEAMTOOL_RELEASES_URL,
                 timeout=HTTP_DEFAULT_TIMEOUT,
@@ -99,20 +97,16 @@ class GitHubReleases(QObject):
             resp.raise_for_status()
             html = resp.text
 
-            # 提取最新版本的 tag_name
-            # GitHub releases 页面格式：<a href="/OpenSteam001/OpenSteamTool/releases/tag/v1.2.3">
             tag_pattern = r'/OpenSteam001/OpenSteamTool/releases/tag/([^"\'>\s]+)'
             matches = re.findall(tag_pattern, html)
-
             if not matches:
                 logger.error("Failed to parse releases page: no tags found")
                 return None
 
             latest_tag = matches[0]
-            logger.info(f"Latest release: {latest_tag}")
+            logger.info(f"Latest release from scrape: {latest_tag}")
 
-            # 构造返回数据
-            release_info = {
+            return {
                 "version": latest_tag,
                 "tag_name": latest_tag,
                 "published_at": "",
@@ -120,25 +114,38 @@ class GitHubReleases(QObject):
                 "html_url": f"{OPENSTEAMTOOL_RELEASES_URL}/tag/{latest_tag}",
                 "assets": [],
             }
+        except Exception as e:
+            logger.error(f"Failed to scrape releases page: {e}")
+            return None
 
-            # 尝试获取该版本的 ZIP 下载链接
-            download_url = self.get_asset_download_url(latest_tag)
-            if download_url:
-                release_info["assets"].append({
-                    "name": download_url.split("/")[-1],
-                    "browser_download_url": download_url,
-                    "size": 0,
-                    "content_type": "application/zip",
-                })
+    def get_latest_release_info(self) -> Optional[dict]:
+        """获取最新 release 信息（优先 API，失败降级爬取）
 
-            return release_info
-
+        Returns:
+            包含版本信息的字典，如果失败则返回 None
+        """
+        try:
+            logger.info("Fetching latest release info from GitHub API...")
+            resp = self._session.get(
+                GITHUB_API_LATEST_RELEASE,
+                timeout=HTTP_DEFAULT_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return self._parse_release_data(data)
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"GitHub API failed ({e}), falling back to scraping releases page...")
+            try:
+                return self._scrape_releases_page()
+            except Exception as se:
+                logger.error(f"Scraping fallback failed: {se}")
+                return None
         except Exception as e:
             logger.error(f"Failed to get latest release info: {e}")
             return None
 
     def get_asset_download_url(self, version: str) -> Optional[str]:
-        """获取指定版本的 DLL ZIP 下载链接（通过爬取 release 页面）
+        """获取指定版本的 DLL ZIP 下载链接（优先 API，降级爬取和猜测）
 
         Args:
             version: 版本号，如 "v1.2.3"
@@ -146,8 +153,22 @@ class GitHubReleases(QObject):
         Returns:
             下载 URL，如果未找到则返回 None
         """
+        # 1. 尝试从 GitHub API 获取 release 详情与 assets
         try:
-            # 访问该版本的 release 页面
+            api_url = f"https://api.github.com/repos/OpenSteam001/OpenSteamTool/releases/tags/{version}"
+            resp = self._session.get(api_url, timeout=HTTP_DEFAULT_TIMEOUT)
+            if resp.status_code == 200:
+                data = resp.json()
+                assets = data.get("assets", [])
+                for asset in assets:
+                    name = asset.get("name", "")
+                    if name.endswith(".zip"):
+                        return asset.get("browser_download_url")
+        except Exception:
+            pass
+
+        # 2. 爬取 release 页面
+        try:
             release_url = f"{OPENSTEAMTOOL_REPO_URL}/releases/tag/{version}"
             logger.info(f"Scraping release page: {release_url}")
 
@@ -155,32 +176,23 @@ class GitHubReleases(QObject):
             resp.raise_for_status()
             html = resp.text
 
-            # 查找 ZIP 文件的下载链接
-            # GitHub 页面格式：
-            # <a href="/OpenSteam001/OpenSteamTool/releases/download/1.4.8/OpenSteamTool-1.4.8-Release.zip">
-            # 使用更宽松的匹配模式
             zip_pattern = r'/OpenSteam001/OpenSteamTool/releases/download/[^"]+\.zip'
             matches = re.findall(zip_pattern, html)
 
             if not matches:
-                # GitHub Releases 页面为 JS 渲染，静态 HTML 不含资产链接，正则匹配失败属于正常情况
                 logger.info(f"No ZIP link in static HTML for {version}, using fallback")
                 return self._guess_download_url(version)
 
-            # 优先选择 Release 版本，其次 Debug 版本
             download_path = None
-            # 先尝试 Release
             for match in matches:
                 if "-Release.zip" in match:
                     download_path = match
                     break
-            # 如果没有 Release，尝试 Debug
             if download_path is None:
                 for match in matches:
                     if "-Debug.zip" in match:
                         download_path = match
                         break
-            # 如果都没有，使用第一个匹配的 ZIP
             if download_path is None:
                 download_path = matches[0]
 

@@ -126,6 +126,16 @@ class LibraryPage(ScrollArea):
         action_folder.triggered.connect(self._on_import_folder_clicked)
         import_menu.addAction(action_files)
         import_menu.addAction(action_folder)
+        import_menu.addSeparator()
+        action_open_depot = Action(FluentIcon.FOLDER, "打开清单目录 (depotcache)", self)
+        action_open_depot.triggered.connect(self._open_depotcache_dir)
+        action_open_lua = Action(FluentIcon.CODE, "打开 Lua 配置目录", self)
+        action_open_lua.triggered.connect(self._open_lua_dir)
+        action_clean_all = Action(FluentIcon.BROOM, "清理 Steam 异常下载残留缓存", self)
+        action_clean_all.triggered.connect(self._on_clean_all_download_cache)
+        import_menu.addAction(action_open_depot)
+        import_menu.addAction(action_open_lua)
+        import_menu.addAction(action_clean_all)
         self.import_btn.setMenu(import_menu)
         header.addWidget(self.import_btn)
 
@@ -412,9 +422,17 @@ class LibraryPage(ScrollArea):
 
         for idx, game in enumerate(games):
             try:
-                card = GameCard(game.app_id, game.name, parent=self)
+                card = GameCard(
+                    game.app_id,
+                    game.name,
+                    manifest_ready=getattr(game, "manifest_ready", True),
+                    missing_manifests=getattr(game, "missing_manifests", []),
+                    parent=self,
+                )
                 card.removed.connect(self._on_remove_game)
                 card.edit_requested.connect(self._on_edit_game)
+                card.import_manifest_requested.connect(self._on_card_import_manifest)
+                card.clean_cache_requested.connect(self._on_card_clean_cache)
                 self._list_layout.addWidget(card)
                 self._card_list.append(card)
                 # 错峰异步加载封面
@@ -651,3 +669,46 @@ class LibraryPage(ScrollArea):
 
         event.acceptProposedAction()
         self.execute_import(paths)
+
+    # ── 便捷工具与卡片操作方法 ──
+
+    def _open_depotcache_dir(self):
+        """打开 Steam/depotcache 目录"""
+        if self._bridge:
+            d = self._bridge.get_depotcache_dir()
+            self._bridge.open_directory(d)
+
+    def _open_lua_dir(self):
+        """打开 Steam/config/lua 目录"""
+        if self._bridge:
+            d = self._bridge.get_lua_dir()
+            self._bridge.open_directory(d)
+
+    def _on_clean_all_download_cache(self):
+        """一键清理所有异常下载缓存"""
+        if self._bridge:
+            success, msg = self._bridge.clean_download_cache()
+            if success:
+                InfoBar.success("清理成功", msg, parent=self, position=InfoBarPosition.TOP)
+            else:
+                InfoBar.error("清理失败", msg, parent=self, position=InfoBarPosition.TOP)
+
+    def _on_card_import_manifest(self, app_id: str):
+        """从卡片直接打开文件选择器导入清单或配置文件"""
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            f"为 AppID {app_id} 导入清单或配置文件",
+            "",
+            "Steam 配置文件与清单 (*.manifest *.lua *.zip);;所有文件 (*.*)",
+        )
+        if files:
+            self.execute_import(files)
+
+    def _on_card_clean_cache(self, app_id: str):
+        """清理特定游戏的下载缓存与卡死状态"""
+        if self._bridge:
+            success, msg = self._bridge.clean_download_cache(app_id)
+            if success:
+                InfoBar.success("清理完成", msg, parent=self, position=InfoBarPosition.TOP)
+            else:
+                InfoBar.error("清理失败", msg, parent=self, position=InfoBarPosition.TOP)

@@ -13,6 +13,8 @@ from unittest.mock import Mock, patch, MagicMock
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
+from core.app_state import DLL_VERSION_MISMATCH
+
 # 需要在导入 PyQt 之前设置 QApplication
 app = QApplication.instance()
 if app is None:
@@ -36,7 +38,7 @@ class TestMainWindowDLL:
                                     from gui.main_window import MainWindow
 
                                     # 不调用真实 __init__，手动设置属性
-                                    window = object.__new__(MainWindow)
+                                    window = MainWindow.__new__(MainWindow)
                                     window._bridge = Mock()
                                     window._game_manager = Mock()
                                     window._config = Mock()
@@ -91,7 +93,7 @@ class TestMainWindowDLL:
 
                 # 验证状态被设置
                 mock_app_state.set.assert_called_once_with(
-                    'DLL_VERSION_MISMATCH', True
+                    DLL_VERSION_MISMATCH, True
                 )
 
     # ===== 测试 5.3: 下载进度更新 =====
@@ -124,7 +126,7 @@ class TestMainWindowDLL:
 
                 # 验证状态被清除
                 mock_app_state.set.assert_called_once_with(
-                    'DLL_VERSION_MISMATCH', False
+                    DLL_VERSION_MISMATCH, False
                 )
 
     # ===== 测试 5.5: 下载完成 (失败) =====
@@ -166,7 +168,7 @@ class TestMainWindowDLL:
 
                 # 验证状态被设置
                 mock_app_state.set.assert_called_once_with(
-                    'DLL_VERSION_MISMATCH', True
+                    DLL_VERSION_MISMATCH, True
                 )
 
     # ===== 测试 5.7: 检查本地 DLL 版本匹配 =====

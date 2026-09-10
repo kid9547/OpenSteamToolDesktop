@@ -74,7 +74,7 @@ class TestHttpConfig(unittest.TestCase):
         self.assertEqual(config.HTTP_DEFAULT_TIMEOUT, 15.0)
 
     def test_cover_timeout(self):
-        self.assertEqual(config.HTTP_COVER_TIMEOUT, 8.0)
+        self.assertEqual(config.HTTP_COVER_TIMEOUT, 5.0)
 
     def test_max_retries(self):
         self.assertEqual(config.HTTP_MAX_RETRIES, 2)

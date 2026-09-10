@@ -112,14 +112,14 @@ def _make_html_with_tag(owner: str, repo: str, tag: str) -> str:
 class TestFetchLatestRelease(unittest.TestCase):
     """_fetch_latest_release 测试"""
 
-    @patch("core.version_checker.GITHUB_REPO_OWNER", "yong0512")
+    @patch("core.version_checker.GITHUB_REPO_OWNER", "kid9547")
     @patch("core.version_checker.GITHUB_REPO_NAME", "OpenSteamToolDesktop")
     @patch("core.version_checker.httpx.Client")
     def test_fetch_success(self, mock_client_cls):
-        html = _make_html_with_tag("yong0512", "OpenSteamToolDesktop", "v1.2.3")
+        html = _make_html_with_tag("kid9547", "OpenSteamToolDesktop", "v1.2.3")
         mock_resp = Mock()
         mock_resp.text = html
-        mock_resp.url = "https://github.com/yong0512/OpenSteamToolDesktop/releases/tag/v1.2.3"
+        mock_resp.url = "https://github.com/kid9547/OpenSteamToolDesktop/releases/tag/v1.2.3"
         mock_resp.raise_for_status = Mock()
         mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_resp
 
@@ -130,14 +130,14 @@ class TestFetchLatestRelease(unittest.TestCase):
         self.assertEqual(data["tag_name"], "v1.2.3")
         self.assertEqual(data["version"], "1.2.3")
 
-    @patch("core.version_checker.GITHUB_REPO_OWNER", "yong0512")
+    @patch("core.version_checker.GITHUB_REPO_OWNER", "kid9547")
     @patch("core.version_checker.GITHUB_REPO_NAME", "OpenSteamToolDesktop")
     @patch("core.version_checker.httpx.Client")
     def test_fetch_via_redirect_url(self, mock_client_cls):
         # HTML 中没有匹配项，但 URL 中有（通过 redirect）
         mock_resp = Mock()
         mock_resp.text = "<html>no tag here</html>"
-        mock_resp.url = "https://github.com/yong0512/OpenSteamToolDesktop/releases/tag/v2.0.0"
+        mock_resp.url = "https://github.com/kid9547/OpenSteamToolDesktop/releases/tag/v2.0.0"
         mock_resp.raise_for_status = Mock()
         mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_resp
 
@@ -188,14 +188,14 @@ class TestFetchLatestRelease(unittest.TestCase):
 class TestCheckForUpdates(unittest.TestCase):
     """check_for_updates 集成测试"""
 
-    @patch("core.version_checker.GITHUB_REPO_OWNER", "yong0512")
+    @patch("core.version_checker.GITHUB_REPO_OWNER", "kid9547")
     @patch("core.version_checker.GITHUB_REPO_NAME", "OpenSteamToolDesktop")
     @patch("core.version_checker.httpx.Client")
     def test_no_new_version_same(self, mock_client_cls):
-        html = _make_html_with_tag("yong0512", "OpenSteamToolDesktop", "v1.0.0")
+        html = _make_html_with_tag("kid9547", "OpenSteamToolDesktop", "v1.0.0")
         mock_resp = Mock()
         mock_resp.text = html
-        mock_resp.url = "https://github.com/yong0512/OpenSteamToolDesktop/releases/tag/v1.0.0"
+        mock_resp.url = "https://github.com/kid9547/OpenSteamToolDesktop/releases/tag/v1.0.0"
         mock_resp.raise_for_status = Mock()
         mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_resp
 
@@ -204,14 +204,14 @@ class TestCheckForUpdates(unittest.TestCase):
             self.assertIsNone(result)
             self.assertIsNone(error)
 
-    @patch("core.version_checker.GITHUB_REPO_OWNER", "yong0512")
+    @patch("core.version_checker.GITHUB_REPO_OWNER", "kid9547")
     @patch("core.version_checker.GITHUB_REPO_NAME", "OpenSteamToolDesktop")
     @patch("core.version_checker.httpx.Client")
     def test_new_version_available(self, mock_client_cls):
-        html = _make_html_with_tag("yong0512", "OpenSteamToolDesktop", "v2.0.0")
+        html = _make_html_with_tag("kid9547", "OpenSteamToolDesktop", "v2.0.0")
         mock_resp = Mock()
         mock_resp.text = html
-        mock_resp.url = "https://github.com/yong0512/OpenSteamToolDesktop/releases/tag/v2.0.0"
+        mock_resp.url = "https://github.com/kid9547/OpenSteamToolDesktop/releases/tag/v2.0.0"
         mock_resp.raise_for_status = Mock()
         mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_resp
 

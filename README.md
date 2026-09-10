@@ -171,7 +171,7 @@ OpenSteamTool 是通过 DLL 注入 Steam 客户端的 C++ 引擎，本工具为�
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/yong0512/OpenSteamToolDesktop.git
+git clone https://github.com/kid9547/OpenSteamToolDesktop.git
 cd OpenSteamToolDesktop
 ```
 

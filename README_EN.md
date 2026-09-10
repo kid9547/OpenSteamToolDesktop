@@ -171,7 +171,7 @@ This is an open-source project — contributions and debugging are welcome. Foll
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yong0512/OpenSteamToolDesktop.git
+git clone https://github.com/kid9547/OpenSteamToolDesktop.git
 cd OpenSteamToolDesktop
 ```
 
@@ -342,11 +342,17 @@ This project is for **educational and research purposes only**. Please adhere to
 
 This project is powered by the [OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool) engine.
 
+## Acknowledgments & Project Origin
+
+- Forked and maintained by [kid9547](https://github.com/kid9547/OpenSteamToolDesktop) based on [yong0512/OpenSteamToolDesktop](https://github.com/yong0512/OpenSteamToolDesktop).
+- Powered by [OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool).
+- UI built with [QFluentWidgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets).
+
 ---
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=yong0512/OpenSteamToolDesktop&type=Date)](https://star-history.com/#yong0512/OpenSteamToolDesktop&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=kid9547/OpenSteamToolDesktop&type=Date)](https://star-history.com/#kid9547/OpenSteamToolDesktop&Date)
 
 ---
 

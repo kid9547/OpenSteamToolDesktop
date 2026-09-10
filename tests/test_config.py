@@ -36,8 +36,7 @@ class TestGitHubConfig(unittest.TestCase):
     """GitHub 配置测试"""
 
     def test_owner_is_placeholder(self):
-        # 提醒：此处应替换为真实用户名
-        self.assertEqual(config.GITHUB_REPO_OWNER, "yourusername")
+        self.assertEqual(config.GITHUB_REPO_OWNER, "kid9547")
 
     def test_releases_url_format(self):
         self.assertIn(config.GITHUB_REPO_OWNER, config.GITHUB_RELEASES_URL)

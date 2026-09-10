@@ -307,7 +307,6 @@ class MainWindow(MSFluentWindow):
                 msg += "\n".join([f"• {dll}" for dll in mismatched_dlls])
                 msg += "\n\n是否立即更新注入？"
 
-                from qfluentwidgets import MessageBox
                 msg_box = MessageBox(
                     "DLL 版本不匹配",
                     msg,
@@ -322,7 +321,6 @@ class MainWindow(MSFluentWindow):
                     # 用户选择稍后提醒，设置状态
                     app_state.set(DLL_VERSION_MISMATCH, True)
         except Exception as e:
-            from loguru import logger
             logger.error(f"本地 DLL 版本检查失败: {e}")
 
     def _update_and_inject(self):

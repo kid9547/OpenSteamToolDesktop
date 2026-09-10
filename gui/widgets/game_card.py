@@ -33,16 +33,22 @@ class GameCard(CardWidget):
 
     removed = pyqtSignal(str)  # 出库信号，携带 app_id
     edit_requested = pyqtSignal(str)  # 编辑信号，携带 app_id
+    import_manifest_requested = pyqtSignal(str)  # 导入清单请求
+    clean_cache_requested = pyqtSignal(str)  # 清理下载缓存请求
 
     def __init__(
         self,
         app_id: str,
         game_name: str = "",
+        manifest_ready: bool = True,
+        missing_manifests: list[str] | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self.app_id = app_id
         self.game_name = game_name
+        self.manifest_ready = manifest_ready
+        self.missing_manifests = missing_manifests or []
         self._cover_worker = None
         self._alive = True  # 安全标志，防止回调到已删除对象
 
@@ -75,10 +81,39 @@ class GameCard(CardWidget):
         self.title_label.setTextColor(TEXT_COLOR, TEXT_COLOR)
         v_layout.addWidget(self.title_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
+        # 标签行：AppID + 清单状态标签
+        tag_layout = QHBoxLayout()
+        tag_layout.setSpacing(10)
+        tag_layout.setContentsMargins(0, 0, 0, 0)
+
         self.info_label = CaptionLabel(f"AppID: {self.app_id}", self)
         self.info_label.setTextColor(TEXT_COLOR, TEXT_COLOR)
-        v_layout.addWidget(self.info_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        tag_layout.addWidget(self.info_label)
 
+        self.manifest_badge = CaptionLabel(self)
+        if self.manifest_ready:
+            self.manifest_badge.setText("清单就绪")
+            self.manifest_badge.setStyleSheet(
+                "color: #52c41a; font-weight: bold; background: rgba(82, 196, 26, 0.15); "
+                "border-radius: 4px; padding: 1px 6px;"
+            )
+            self.manifest_badge.setToolTip("清单文件已部署在本地，Steam 可直接下载安装")
+        else:
+            missing_count = len(self.missing_manifests)
+            self.manifest_badge.setText(f"待补清单 ({missing_count})" if missing_count else "待补清单")
+            self.manifest_badge.setStyleSheet(
+                "color: #fa8c16; font-weight: bold; background: rgba(250, 140, 22, 0.15); "
+                "border-radius: 4px; padding: 1px 6px;"
+            )
+            missing_preview = ", ".join(self.missing_manifests[:3])
+            self.manifest_badge.setToolTip(
+                f"缺少清单文件: {missing_preview}\\n"
+                "未购买直接下载可能报错 HTTP 401。点击右侧更多菜单可导入或在线查找清单。"
+            )
+        tag_layout.addWidget(self.manifest_badge)
+        tag_layout.addStretch(1)
+
+        v_layout.addLayout(tag_layout)
         v_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         h_layout.addLayout(v_layout)
         h_layout.addStretch(1)
@@ -93,10 +128,10 @@ class GameCard(CardWidget):
         self._btn_delete = self._make_action_btn(FluentIcon.DELETE, "出库", self._confirm_remove)
         h_layout.addWidget(self._btn_delete, 0, Qt.AlignmentFlag.AlignRight)
 
-        # 更多按钮（仅保留低频的复制操作）
+        # 更多按钮
         self.more_button = TransparentToolButton(FluentIcon.MORE, self)
         self.more_button.setFixedSize(32, 32)
-        self.more_button.setToolTip("复制")
+        self.more_button.setToolTip("更多操作")
         self.more_button.installEventFilter(
             ToolTipFilter(self.more_button, showDelay=150, position=ToolTipPosition.TOP)
         )
@@ -184,8 +219,13 @@ class GameCard(CardWidget):
     # ---- 右键菜单 ----
 
     def _show_more_menu(self):
-        """⋮ 按钮只保留低频复制操作"""
+        """更多操作菜单"""
         menu = RoundMenu(parent=self)
+        menu.addAction(Action(FluentIcon.FOLDER_ADD, "导入清单文件 (.manifest / .zip)", triggered=self._on_import_manifest))
+        menu.addAction(Action(FluentIcon.SEARCH, "在线寻找此游戏清单", triggered=self._search_manifest_online))
+        menu.addAction(Action(FluentIcon.FOLDER, "打开清单目录 (depotcache)", triggered=self._open_depotcache))
+        menu.addAction(Action(FluentIcon.BROOM, "清理此游戏下载残留缓存", triggered=self._on_clean_cache))
+        menu.addSeparator()
         menu.addAction(Action(FluentIcon.COPY, "复制 AppID", triggered=self._copy_appid))
         menu.addAction(Action(FluentIcon.COPY, "复制游戏名", triggered=self._copy_name))
 
@@ -193,6 +233,32 @@ class GameCard(CardWidget):
             self.more_button.rect().bottomLeft()
         )
         menu.exec(pos)
+
+    def _on_import_manifest(self):
+        self.import_manifest_requested.emit(self.app_id)
+
+    def _on_clean_cache(self):
+        self.clean_cache_requested.emit(self.app_id)
+
+    def _open_depotcache(self):
+        from core.app_state import app_state, STEAM_PATH
+        steam_path = str(app_state.get(STEAM_PATH, ""))
+        if steam_path:
+            depot_dir = os.path.join(steam_path, "depotcache")
+            os.makedirs(depot_dir, exist_ok=True)
+            import sys
+            if sys.platform == "win32":
+                os.startfile(depot_dir)
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", depot_dir])
+
+    def _search_manifest_online(self):
+        from core.manifest_resolver import ManifestResolver
+        queries = ManifestResolver.get_search_queries(self.app_id, self.game_name)
+        url = queries.get("百度搜索", "")
+        if url:
+            webbrowser.open(url)
 
     def _copy_appid(self):
         QApplication.clipboard().setText(self.app_id)

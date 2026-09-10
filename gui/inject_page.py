@@ -208,15 +208,45 @@ class InjectPage(ScrollArea):
         steam_ctrl_layout.addWidget(self.restart_btn)
         layout.addLayout(steam_ctrl_layout)
 
-        # 打开 Steam 目录按钮
-        open_dir_layout = QHBoxLayout()
-        open_dir_label = BodyLabel("打开 Steam 安装目录")
-        open_dir_layout.addWidget(open_dir_label)
-        open_dir_layout.addStretch()
-        self.open_dir_btn = PushButton(FluentIcon.FOLDER, "打开 Steam 安装目录")
+        # 便捷目录导航
+        dir_header = CaptionLabel("Steam 目录快捷访问（参考 OpenSteam-Kitten）")
+        dir_header.setTextColor("#888888", "#aaaaaa")
+        layout.addWidget(dir_header)
+
+        dir_box = QHBoxLayout()
+        dir_box.setSpacing(10)
+
+        self.open_dir_btn = PushButton(FluentIcon.FOLDER, "Steam 根目录")
         self.open_dir_btn.clicked.connect(self._on_open_steam_dir)
-        open_dir_layout.addWidget(self.open_dir_btn)
-        layout.addLayout(open_dir_layout)
+        dir_box.addWidget(self.open_dir_btn)
+
+        self.open_lua_btn = PushButton(FluentIcon.CODE, "Lua 配置目录")
+        self.open_lua_btn.clicked.connect(self._on_open_lua_dir)
+        dir_box.addWidget(self.open_lua_btn)
+
+        self.open_depot_btn = PushButton(FluentIcon.DOCUMENT, "清单缓存目录")
+        self.open_depot_btn.clicked.connect(self._on_open_depotcache_dir)
+        dir_box.addWidget(self.open_depot_btn)
+
+        self.open_plugin_btn = PushButton(FluentIcon.APPLICATION, "插件目录")
+        self.open_plugin_btn.clicked.connect(self._on_open_plugin_dir)
+        dir_box.addWidget(self.open_plugin_btn)
+
+        self.open_dl_btn = PushButton(FluentIcon.DOWNLOAD, "下载缓存目录")
+        self.open_dl_btn.clicked.connect(self._on_open_download_dir)
+        dir_box.addWidget(self.open_dl_btn)
+
+        layout.addLayout(dir_box)
+
+        # 一键清理 Steam 异常下载缓存
+        clean_layout = QHBoxLayout()
+        clean_label = BodyLabel("清理 Steam 异常下载残留缓存与卡死状态（解决 401 报错后下载停滞）")
+        clean_layout.addWidget(clean_label)
+        clean_layout.addStretch()
+        self.clean_cache_btn = PushButton(FluentIcon.BROOM, "清理下载缓存")
+        self.clean_cache_btn.clicked.connect(self._on_clean_download_cache)
+        clean_layout.addWidget(self.clean_cache_btn)
+        layout.addLayout(clean_layout)
 
         self._main_layout.addWidget(card)
 
@@ -611,3 +641,46 @@ class InjectPage(ScrollArea):
 
         # 更新状态显示
         self._update_status()
+
+    # ---- 目录导航与维护方法（参考 OpenSteam-Kitten）----
+
+    def _on_open_steam_dir(self):
+        """打开 Steam 安装目录"""
+        steam_path = self._bridge.get_steam_path() if self._bridge else ""
+        if steam_path and os.path.exists(steam_path):
+            self._bridge.open_directory(steam_path)
+        else:
+            InfoBar.warning("提示", "未找到有效的 Steam 安装目录", parent=self, position=InfoBarPosition.TOP)
+
+    def _on_open_lua_dir(self):
+        """打开 Lua 配置目录"""
+        if self._bridge:
+            d = self._bridge.get_lua_dir()
+            self._bridge.open_directory(d)
+
+    def _on_open_depotcache_dir(self):
+        """打开清单缓存目录"""
+        if self._bridge:
+            d = self._bridge.get_depotcache_dir()
+            self._bridge.open_directory(d)
+
+    def _on_open_plugin_dir(self):
+        """打开插件目录"""
+        if self._bridge:
+            d = self._bridge.get_stplugin_dir()
+            self._bridge.open_directory(d)
+
+    def _on_open_download_dir(self):
+        """打开下载缓存目录"""
+        if self._bridge:
+            d = self._bridge.get_downloading_dir()
+            self._bridge.open_directory(d)
+
+    def _on_clean_download_cache(self):
+        """一键清理 Steam 异常下载残留缓存与卡死状态"""
+        if self._bridge:
+            success, msg = self._bridge.clean_download_cache()
+            if success:
+                InfoBar.success("清理完成", msg, parent=self, position=InfoBarPosition.TOP, duration=5000)
+            else:
+                InfoBar.error("清理失败", msg, parent=self, position=InfoBarPosition.TOP, duration=5000)

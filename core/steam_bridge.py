@@ -373,3 +373,117 @@ class SteamBridge:
     def get_dll_manager(self) -> DLLManager:
         """获取 DLL 管理器实例"""
         return self._dll_manager
+
+    # ── 便捷目录与维护工具（参考 OpenSteam-Kitten）──
+
+    def open_directory(self, target: str) -> tuple[bool, str]:
+        """在文件资源管理器中打开指定目录"""
+        if not target:
+            return False, "目录路径为空"
+        if not os.path.exists(target):
+            try:
+                os.makedirs(target, exist_ok=True)
+            except Exception as e:
+                return False, f"目录不存在且无法创建: {e}"
+
+        try:
+            if sys.platform == "win32":
+                os.startfile(os.path.normpath(target))
+            else:
+                subprocess.Popen(["xdg-open", target])
+            return True, f"已打开目录: {target}"
+        except Exception as e:
+            logger.error(f"Failed to open directory {target}: {e}")
+            return False, f"打开目录失败: {e}"
+
+    def get_depotcache_dir(self) -> str:
+        """获取 Steam/depotcache 目录"""
+        return os.path.join(self._steam_path, "depotcache") if self._steam_path else ""
+
+    def get_stplugin_dir(self) -> str:
+        """获取 Steam/config/stplug-in 目录"""
+        return os.path.join(self._steam_path, "config", "stplug-in") if self._steam_path else ""
+
+    def get_downloading_dir(self) -> str:
+        """获取 Steam/steamapps/downloading 目录"""
+        return os.path.join(self._steam_path, "steamapps", "downloading") if self._steam_path else ""
+
+    def clean_download_cache(self, app_id: str | None = None) -> tuple[bool, str]:
+        """一键清理 Steam 异常下载残留缓存与损坏状态（参考 OpenSteam-Kitten）"""
+        if not self._steam_path or not os.path.isdir(self._steam_path):
+            return False, "Steam 路径未设置或不存在"
+
+        import shutil
+        steamapps = os.path.join(self._steam_path, "steamapps")
+        dl_dir = os.path.join(steamapps, "downloading")
+        temp_dir = os.path.join(steamapps, "temp")
+
+        removed_count = 0
+        total_freed_bytes = 0
+
+        def _safe_remove(path: str):
+            nonlocal removed_count, total_freed_bytes
+            try:
+                if os.path.isfile(path):
+                    sz = os.path.getsize(path)
+                    os.remove(path)
+                    total_freed_bytes += sz
+                    removed_count += 1
+                elif os.path.isdir(path):
+                    for root, _, files in os.walk(path):
+                        for f in files:
+                            fp = os.path.join(root, f)
+                            try:
+                                total_freed_bytes += os.path.getsize(fp)
+                                os.remove(fp)
+                                removed_count += 1
+                            except OSError:
+                                pass
+                    shutil.rmtree(path, ignore_errors=True)
+            except Exception as e:
+                logger.debug(f"Failed to remove {path}: {e}")
+
+        if app_id:
+            target_dl = os.path.join(dl_dir, str(app_id))
+            target_temp = os.path.join(temp_dir, str(app_id))
+            if os.path.exists(target_dl):
+                _safe_remove(target_dl)
+            if os.path.exists(target_temp):
+                _safe_remove(target_temp)
+
+            acf_path = os.path.join(steamapps, f"appmanifest_{app_id}.acf")
+            if os.path.isfile(acf_path):
+                try:
+                    with open(acf_path, "r", encoding="utf-8", errors="replace") as f:
+                        acf_txt = f.read()
+                    if '"StateFlags"\t\t"1026"' in acf_txt or '"StateFlags"\t\t"1024"' in acf_txt:
+                        os.remove(acf_path)
+                        removed_count += 1
+                        logger.info(f"Removed corrupt appmanifest for AppID {app_id}")
+                except Exception as e:
+                    logger.debug(f"Error checking ACF {acf_path}: {e}")
+            freed_mb = total_freed_bytes / (1024 * 1024)
+            return True, f"已清理 AppID {app_id} 下载残留（释放 {freed_mb:.1f} MB，共 {removed_count} 个文件）"
+        else:
+            if os.path.isdir(dl_dir):
+                for item in os.listdir(dl_dir):
+                    _safe_remove(os.path.join(dl_dir, item))
+            if os.path.isdir(temp_dir):
+                for item in os.listdir(temp_dir):
+                    _safe_remove(os.path.join(temp_dir, item))
+
+            if os.path.isdir(steamapps):
+                for item in os.listdir(steamapps):
+                    if item.startswith("appmanifest_") and item.endswith(".acf"):
+                        acf_p = os.path.join(steamapps, item)
+                        try:
+                            with open(acf_p, "r", encoding="utf-8", errors="replace") as f:
+                                txt = f.read()
+                            if '"StateFlags"\t\t"1026"' in txt:
+                                os.remove(acf_p)
+                                removed_count += 1
+                        except Exception:
+                            pass
+
+            freed_mb = total_freed_bytes / (1024 * 1024)
+            return True, f"已成功清理 Steam 异常下载缓存（释放 {freed_mb:.1f} MB，共清理 {removed_count} 个项目）"
