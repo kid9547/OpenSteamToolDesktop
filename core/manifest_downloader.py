@@ -14,20 +14,90 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import time
 import zipfile
+import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Any
 
 import httpx
 
 from utils.logger import setup_logger
 
-from config import STEAM_CDN_API, SSL_VERIFY
+from config import (
+    STEAM_CDN_API, SSL_VERIFY,
+    MANIFEST_GITHUB_REPOS, GITHUB_RAW_MIRRORS,
+    MANIFESTHUB_API_URL, MANIFESTHUB_API_KEY,
+)
 from utils.http_client import get_system_proxy
 
 logger = setup_logger(__name__)
+
+# Steam Depot Manifest 二进制魔数 (0x71F617D0)
+STEAM_MANIFEST_MAGIC = b"\xd0\x17\xf6\x71"
+
+# ManifestHub 上游 README 动态获取镜像源
+MANIFESTHUB_README_URL = "https://raw.githubusercontent.com/SteamAutoCracks/ManifestHub/refs/heads/main/README.md"
+MANIFESTHUB_README_MIRRORS = [
+    "https://ghfast.top/https://raw.githubusercontent.com/SteamAutoCracks/ManifestHub/refs/heads/main/README.md",
+    "https://ghproxy.net/https://raw.githubusercontent.com/SteamAutoCracks/ManifestHub/refs/heads/main/README.md",
+    "https://raw.dgithub.xyz/SteamAutoCracks/ManifestHub/refs/heads/main/README.md",
+    "https://raw.githubusercontent.com/SteamAutoCracks/ManifestHub/refs/heads/main/README.md",
+]
+
+
+def fetch_manifesthub_upstream_info(timeout: float = 6.0) -> dict[str, str]:
+    """从上游官方 GitHub README 通过国内加速镜像动态获取最新的 ManifestHub API 接口与 Web 网站地址
+
+    Returns:
+        {
+            "api_url": "https://api.manifesthub2.filegear-sg.me/manifest",
+            "web_url": "https://manifesthub2.filegear-sg.me",
+            "update_time": "2025-07-24",
+            "note": "免费API密钥有效期为24小时",
+            "mirror_used": "...",
+        }
+    """
+    default_info = {
+        "api_url": MANIFESTHUB_API_URL,
+        "web_url": "https://manifesthub2.filegear-sg.me",
+        "update_time": "",
+        "note": "免费API密钥有效期为24小时",
+        "mirror_used": "default",
+    }
+
+    proxy = get_system_proxy()
+    for mirror_url in MANIFESTHUB_README_MIRRORS:
+        try:
+            with httpx.Client(proxy=proxy, timeout=timeout, verify=SSL_VERIFY, follow_redirects=True) as client:
+                resp = client.get(mirror_url)
+                if resp.status_code == 200 and resp.text:
+                    text = resp.text
+                    api_m = re.search(r'(https?://[a-zA-Z0-9.\-]+/manifest)', text)
+                    web_m = re.search(r'(https?://manifesthub[a-zA-Z0-9.\-]+)', text)
+                    time_m = re.search(r'Update time:\s*`([^`]+)`', text)
+                    note_m = re.search(r'免费API密钥有效期为[^\r\n]+', text)
+
+                    api_url = api_m.group(1) if api_m else default_info["api_url"]
+                    web_url = web_m.group(1) if web_m else default_info["web_url"]
+                    update_time = time_m.group(1) if time_m else ""
+                    note = note_m.group(0) if note_m else default_info["note"]
+
+                    logger.info(f"Dynamically parsed ManifestHub upstream info from {mirror_url}: api={api_url}, web={web_url}")
+                    return {
+                        "api_url": api_url,
+                        "web_url": web_url,
+                        "update_time": update_time,
+                        "note": note,
+                        "mirror_used": mirror_url,
+                    }
+        except Exception as e:
+            logger.debug(f"Failed to fetch ManifestHub README from {mirror_url}: {e}")
+
+    return default_info
+
 
 # 常用 Steam CDN 备用列表（API 不可用时使用）
 _FALLBACK_CDN_HOSTS = [
@@ -88,9 +158,10 @@ class ManifestDownloader:
         """
         self._steam_path = steam_path
         self._depotcache_dir = os.path.join(steam_path, "depotcache") if steam_path else ""
+        self._config_depotcache_dir = os.path.join(steam_path, "config", "depotcache") if steam_path else ""
         self._max_workers = max_workers
 
-        # HTTP 客户端
+        # 主 HTTP 客户端（优先使用系统代理）
         self._http = httpx.Client(
             proxy=get_system_proxy(),
             headers={
@@ -100,29 +171,50 @@ class ManifestDownloader:
                     "Chrome/120.0.0.0 Safari/537.36"
                 ),
             },
-            timeout=30.0,
+            timeout=25.0,
             follow_redirects=True,
-            verify=SSL_VERIFY,  # Windows 兼容性：禁用 SSL 证书验证
+            verify=SSL_VERIFY,
+        )
+
+        # 直连 HTTP 客户端（用于无需/绕过代理的公共镜像）
+        self._direct_http = httpx.Client(
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            },
+            timeout=20.0,
+            follow_redirects=True,
+            verify=SSL_VERIFY,
         )
 
         logger.debug(f"ManifestDownloader initialized: steam_path={steam_path}")
 
     def close(self):
         """释放 HTTP 资源"""
-        self._http.close()
+        try:
+            self._http.close()
+        except Exception:
+            pass
+        try:
+            self._direct_http.close()
+        except Exception:
+            pass
 
     # ── 公开接口 ──────────────────────────────────────────
 
     def download_manifests(
         self,
-        depots: list[tuple[str, str, int]],  # [(depot_id, manifest_gid, size), ...]
+        depots: list[Any],  # [(depot_id, manifest_gid, size, [owner_app_id]), ...]
         app_id: str = "",
     ) -> ManifestBatchResult:
         """批量下载 Depot Manifest 文件
 
         Args:
-            depots: [(depot_id, manifest_gid, size), ...] 列表
-            app_id: 游戏 AppID（用于日志）
+            depots: [(depot_id, manifest_gid, size, [owner_app_id]), ...] 列表
+            app_id: 游戏 AppID（用于日志与分支检索）
 
         Returns:
             ManifestBatchResult: 批量下载结果
@@ -131,15 +223,24 @@ class ManifestDownloader:
             logger.error("Cannot download manifests: depotcache directory not set")
             return ManifestBatchResult()
 
-        # 确保 depotcache 目录存在
+        # 确保 depotcache 目录与 config/depotcache 均存在
         os.makedirs(self._depotcache_dir, exist_ok=True)
+        if self._config_depotcache_dir:
+            os.makedirs(self._config_depotcache_dir, exist_ok=True)
 
         logger.info(f"Downloading {len(depots)} manifest(s) for AppID {app_id or 'unknown'}")
 
-        # 过滤：去掉 manifest_gid 为空的
-        valid_depots = [
-            (did, gid, size) for did, gid, size in depots if gid
-        ]
+        # 标准化 depot 元组，支持 (depot_id, gid), (depot_id, gid, size), (depot_id, gid, size, owner_app_id)
+        valid_depots = []
+        for item in depots:
+            if not item:
+                continue
+            did = str(item[0]) if len(item) > 0 else ""
+            gid = str(item[1]) if len(item) > 1 and item[1] is not None else ""
+            size = int(item[2]) if len(item) > 2 and item[2] else 0
+            owner = str(item[3]) if len(item) > 3 and item[3] else app_id
+            if did and gid:
+                valid_depots.append((did, gid, size, owner))
 
         if not valid_depots:
             logger.debug("No valid depots (all missing manifest_gid)")
@@ -149,26 +250,20 @@ class ManifestDownloader:
 
         # 获取 CDN 服务器列表
         cdn_hosts = self._get_cdn_hosts()
-        if not cdn_hosts:
-            logger.error("No CDN hosts available, cannot download manifests")
-            return ManifestBatchResult(
-                total=len(depots),
-                failed=len(valid_depots),
-            )
 
         # 并发下载
         result = ManifestBatchResult(total=len(depots), skipped=len(depots) - len(valid_depots))
 
         with ThreadPoolExecutor(max_workers=min(self._max_workers, len(valid_depots))) as executor:
             futures = {}
-            for depot_id, manifest_gid, size in valid_depots:
+            for did, gid, size, owner in valid_depots:
                 future = executor.submit(
-                    self._download_single, depot_id, manifest_gid, size, cdn_hosts
+                    self._download_single, did, gid, size, cdn_hosts, app_id, owner
                 )
-                futures[future] = (depot_id, manifest_gid)
+                futures[future] = (did, gid)
 
             for future in as_completed(futures):
-                depot_id, manifest_gid = futures[future]
+                did, gid = futures[future]
                 try:
                     dl_result = future.result()
                     result.results.append(dl_result)
@@ -177,10 +272,10 @@ class ManifestDownloader:
                     else:
                         result.failed += 1
                 except Exception as e:
-                    logger.error(f"Download failed for depot {depot_id}/{manifest_gid}: {e}")
+                    logger.error(f"Download failed for depot {did}/{gid}: {e}")
                     result.results.append(ManifestDownloadResult(
-                        depot_id=depot_id,
-                        manifest_gid=manifest_gid,
+                        depot_id=did,
+                        manifest_gid=gid,
                         success=False,
                         message=str(e),
                     ))
@@ -193,15 +288,40 @@ class ManifestDownloader:
         return result
 
     def check_manifest_exists(self, depot_id: str, manifest_gid: str) -> bool:
-        """检查 manifest 文件是否已存在于 depotcache"""
+        """检查 manifest 文件是否已存在于 depotcache 或 config/depotcache
+
+        若仅存在于其中一个目录，自动镜像同步到另一目录。
+        """
         if not self._depotcache_dir:
             return False
-        filepath = os.path.join(self._depotcache_dir, f"{depot_id}_{manifest_gid}.manifest")
-        return os.path.isfile(filepath) and os.path.getsize(filepath) > 0
+        fn = f"{depot_id}_{manifest_gid}.manifest"
+        p1 = os.path.join(self._depotcache_dir, fn)
+        p2 = os.path.join(self._config_depotcache_dir, fn) if self._config_depotcache_dir else ""
+
+        has_p1 = os.path.isfile(p1) and os.path.getsize(p1) > 0
+        has_p2 = bool(p2 and os.path.isfile(p2) and os.path.getsize(p2) > 0)
+
+        # 保持双向同步
+        if has_p1 and not has_p2 and p2:
+            try:
+                os.makedirs(os.path.dirname(p2), exist_ok=True)
+                with open(p1, "rb") as fsrc, open(p2, "wb") as fdst:
+                    fdst.write(fsrc.read())
+            except Exception:
+                pass
+        elif has_p2 and not has_p1:
+            try:
+                os.makedirs(os.path.dirname(p1), exist_ok=True)
+                with open(p2, "rb") as fsrc, open(p1, "wb") as fdst:
+                    fdst.write(fsrc.read())
+            except Exception:
+                pass
+
+        return has_p1 or has_p2
 
     def verify_game_manifests(
         self,
-        depots: list[tuple[str, str, int]],
+        depots: list[Any],
     ) -> tuple[bool, list[str]]:
         """验证游戏的 Depot Manifest 文件是否完整
 
@@ -209,12 +329,16 @@ class ManifestDownloader:
             (全部就绪, 缺失的 manifest 列表)
         """
         missing = []
-        for depot_id, manifest_gid, _size in depots:
-            if not manifest_gid:
+        for item in depots:
+            if not item:
                 continue
-            if not self.check_manifest_exists(depot_id, manifest_gid):
-                missing.append(f"{depot_id}_{manifest_gid}")
-                logger.debug(f"Missing manifest: depot={depot_id}, gid={manifest_gid}")
+            did = str(item[0]) if len(item) > 0 else ""
+            gid = str(item[1]) if len(item) > 1 and item[1] is not None else ""
+            if not gid:
+                continue
+            if not self.check_manifest_exists(did, gid):
+                missing.append(f"{did}_{gid}")
+                logger.debug(f"Missing manifest: depot={did}, gid={gid}")
 
         all_ready = len(missing) == 0
         if not all_ready:
@@ -229,12 +353,14 @@ class ManifestDownloader:
         manifest_gid: str,
         size: int,
         cdn_hosts: list[str],
+        app_id: str = "",
+        owner_app_id: str = "",
     ) -> ManifestDownloadResult:
-        """下载单个 Depot Manifest（支持多 CDN 重试）"""
+        """下载单个 Depot Manifest（支持多源级联回退）"""
         target_path = os.path.join(self._depotcache_dir, f"{depot_id}_{manifest_gid}.manifest")
 
-        # 如已存在则跳过
-        if os.path.isfile(target_path) and os.path.getsize(target_path) > 0:
+        # 1. 如已存在则直接返回成功
+        if self.check_manifest_exists(depot_id, manifest_gid):
             logger.debug(f"Manifest exists, skipping: {depot_id}_{manifest_gid}")
             return ManifestDownloadResult(
                 depot_id=depot_id,
@@ -244,103 +370,236 @@ class ManifestDownloader:
                 file_path=target_path,
             )
 
-        # 尝试从各个 CDN 下载
+        # 2. 尝试从社区 GitHub 仓库下载（按 Tag 或分支快速获取）
+        gh_data = self._download_from_github_repos(depot_id, manifest_gid, app_id, owner_app_id)
+        if gh_data:
+            return self._save_manifest_payload(depot_id, manifest_gid, gh_data, "GitHub Manifest Cache")
+
+        # 3. 尝试从 ManifestHub API 获取
+        mhub_data = self._download_from_manifesthub(depot_id, manifest_gid)
+        if mhub_data:
+            return self._save_manifest_payload(depot_id, manifest_gid, mhub_data, "ManifestHub API")
+
+        # 4. 尝试从 Steam 官方 CDN 获取（未加锁/免令牌 depot 适用）
         for host in cdn_hosts:
             url = self._build_manifest_url(host, depot_id, manifest_gid, size)
-            logger.debug(f"Trying CDN: {host} for depot {depot_id}/{manifest_gid}")
-
             try:
-                resp = self._http.get(url, timeout=30.0)
+                resp = self._http.get(url, timeout=15.0)
                 if resp.status_code == 200:
-                    # Steam CDN 返回 ZIP 格式的 manifest
-                    manifest_data = self._extract_manifest_payload(resp.content)
-                    if manifest_data:
-                        # 写入文件
-                        with open(target_path, "wb") as f:
-                            f.write(manifest_data)
-
-                        # 清理同 Depot 的旧版本 manifest
-                        self._clean_old_manifests(depot_id, manifest_gid)
-
-                        logger.info(
-                            f"Manifest downloaded: {depot_id}_{manifest_gid} "
-                            f"({len(manifest_data)} bytes)"
-                        )
-                        return ManifestDownloadResult(
-                            depot_id=depot_id,
-                            manifest_gid=manifest_gid,
-                            success=True,
-                            message=f"Downloaded ({len(manifest_data)} bytes)",
-                            file_path=target_path,
-                        )
-                    else:
-                        logger.debug(f"Empty/Invalid ZIP payload from {host} for {depot_id}")
-                        continue
-                elif resp.status_code == 404:
-                    logger.debug(f"Manifest not found on {host} (404): {depot_id}_{manifest_gid}")
-                    continue
-                else:
-                    logger.debug(f"HTTP {resp.status_code} from {host} for {depot_id}_{manifest_gid}")
-
-            except (httpx.RequestError, httpx.TimeoutException) as e:
-                logger.debug(f"CDN {host} failed: {e}")
+                    payload = self._extract_manifest_payload(resp.content)
+                    if payload:
+                        return self._save_manifest_payload(depot_id, manifest_gid, payload, f"Steam CDN ({host})")
+            except Exception:
                 continue
 
-        logger.warning(f"All CDNs failed for depot {depot_id}/{manifest_gid}")
+        logger.warning(f"All sources exhausted for depot {depot_id}/{manifest_gid}")
         return ManifestDownloadResult(
             depot_id=depot_id,
             manifest_gid=manifest_gid,
             success=False,
-            message="All CDNs exhausted",
+            message="All sources exhausted",
         )
 
-    @staticmethod
-    def _extract_manifest_payload(data: bytes) -> bytes | None:
-        """从 Steam CDN 返回的 ZIP 数据中提取 manifest payload
+    def _download_from_github_repos(
+        self,
+        depot_id: str,
+        manifest_gid: str,
+        app_id: str = "",
+        owner_app_id: str = "",
+    ) -> bytes | None:
+        """从社区 GitHub 清单仓库拉取文件"""
+        fn = f"{depot_id}_{manifest_gid}.manifest"
 
-        Steam CDN 将 manifest 数据包装为 ZIP 文件，内部包含名为 'z' 的文件。
-        如果解析 ZIP 失败，则原样返回数据（可能已经是原始 payload）。
-        """
-        if not data:
-            return None
+        # 组织候选文件相对路径
+        candidates: list[tuple[str, str]] = []
 
-        try:
-            with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
-                # 查找名为 'z' 的内部文件（Steam 标准格式）
-                for name in zf.namelist():
-                    # 提取匹配的文件名（通常为 'z' 或类似短名）
-                    with zf.open(name) as f:
-                        payload = f.read()
-                        if payload:
-                            logger.debug(f"Extracted manifest payload from ZIP: {len(payload)} bytes")
+        # 优先路径 1: P-ToyStore 的 Tag 路径（极度精准，无 AppID 归属混淆）
+        if manifest_gid:
+            candidates.append(
+                ("P-ToyStore/SteamManifestCache_Pro", f"refs/tags/{depot_id}_{manifest_gid}/{fn}")
+            )
+
+        # 路径 2: 拥有者 AppID 分支（DLC 专有分支）
+        if owner_app_id:
+            for repo in MANIFEST_GITHUB_REPOS:
+                candidates.append((repo, f"{owner_app_id}/{fn}"))
+
+        # 路径 3: 主游戏 AppID 分支
+        if app_id and app_id != owner_app_id:
+            for repo in MANIFEST_GITHUB_REPOS:
+                candidates.append((repo, f"{app_id}/{fn}"))
+
+        # 遍历候选仓库路径，依次尝试直连与镜像源
+        for repo, rel_path in candidates:
+            raw_url = f"https://raw.githubusercontent.com/{repo}/{rel_path}"
+
+            url_candidates = [
+                (raw_url, self._http),                                               # 优先走代理客户端
+                (f"https://ghfast.top/{raw_url}", self._direct_http),                # 高速镜像 1
+                (f"https://ghproxy.net/{raw_url}", self._direct_http),               # 高速镜像 2
+                (f"https://raw.dgithub.xyz/{repo}/{rel_path}", self._direct_http),   # 高速镜像 3
+            ]
+
+            for url, client in url_candidates:
+                try:
+                    resp = client.get(url, timeout=12.0)
+                    if resp.status_code == 200 and len(resp.content) >= 16:
+                        payload = self._extract_manifest_payload(resp.content)
+                        if payload and len(payload) >= 16:
+                            logger.info(f"Successfully fetched {fn} from {url.split('/')[2]}")
                             return payload
-                logger.debug("ZIP parsed but no valid payload found")
-                return None
-        except (zipfile.BadZipFile, OSError) as e:
-            # ZIP 解析失败，可能是原始数据
-            logger.debug(f"ZIP parse failed ({e}), using raw data ({len(data)} bytes)")
-            return data
-        except Exception as e:
-            logger.warning(f"Unexpected error extracting manifest: {e}")
+                except Exception:
+                    continue
+
+        return None
+
+    def _download_from_manifesthub(self, depot_id: str, manifest_gid: str) -> bytes | None:
+        """从 ManifestHub API 拉取清单（若有 API Key）"""
+        from core.config_manager import ConfigManager
+        cm = ConfigManager()
+        api_key = cm.get("manifesthub_api_key", MANIFESTHUB_API_KEY)
+        if not api_key:
             return None
+
+        base_api_url = cm.get("manifesthub_api_url", MANIFESTHUB_API_URL)
+        url = f"{base_api_url}?apikey={api_key}&depotid={depot_id}&manifestid={manifest_gid}"
+        try:
+            resp = self._http.get(url, timeout=20.0)
+            if resp.status_code == 200 and len(resp.content) >= 16:
+                payload = self._extract_manifest_payload(resp.content)
+                if payload:
+                    return payload
+        except Exception as e:
+            logger.debug(f"ManifestHub API fetch failed: {e}")
+
+        return None
+
+    def _save_manifest_payload(
+        self,
+        depot_id: str,
+        manifest_gid: str,
+        payload: bytes,
+        source_name: str,
+    ) -> ManifestDownloadResult:
+        """保存解压验证后的清单到 depotcache 与 config/depotcache"""
+        target_path = os.path.join(self._depotcache_dir, f"{depot_id}_{manifest_gid}.manifest")
+        try:
+            # 确保目录存在
+            if self._depotcache_dir:
+                os.makedirs(self._depotcache_dir, exist_ok=True)
+            if self._config_depotcache_dir:
+                os.makedirs(self._config_depotcache_dir, exist_ok=True)
+
+            # 写入主 depotcache
+            with open(target_path, "wb") as f:
+                f.write(payload)
+
+            # 镜像写入 config/depotcache
+            if self._config_depotcache_dir:
+                cfg_path = os.path.join(self._config_depotcache_dir, f"{depot_id}_{manifest_gid}.manifest")
+                try:
+                    with open(cfg_path, "wb") as f:
+                        f.write(payload)
+                except Exception:
+                    pass
+
+            # 清理旧版本清单
+            self._clean_old_manifests(depot_id, manifest_gid)
+
+            logger.info(
+                f"Manifest saved: {depot_id}_{manifest_gid} "
+                f"({len(payload)} bytes) from {source_name}"
+            )
+            return ManifestDownloadResult(
+                depot_id=depot_id,
+                manifest_gid=manifest_gid,
+                success=True,
+                message=f"Downloaded from {source_name} ({len(payload)} bytes)",
+                file_path=target_path,
+            )
+        except Exception as e:
+            logger.error(f"Failed to save manifest file {target_path}: {e}")
+            return ManifestDownloadResult(
+                depot_id=depot_id,
+                manifest_gid=manifest_gid,
+                success=False,
+                message=f"Save failed: {e}",
+            )
+
+    @classmethod
+    def _extract_manifest_payload(cls, data: bytes) -> bytes | None:
+        """从任意格式的原始数据中提取标准的 Steam 二进制清单
+
+        支持格式：
+        1. 标准未经压缩的 Steam 清单（以 0x71F617D0 魔数开头）
+        2. Pro 体系压缩清单（10 字节头 + raw DEFLATE 流，RFC 1951）
+        3. Steam CDN ZIP 封装（包含名为 'z' 或以 '.manifest' 结尾的载荷）
+        4. 标准 zlib 封装流
+        """
+        if not data or len(data) < 16:
+            return None
+
+        # 1. 已经是解压好的标准 Steam Manifest
+        if data[:4] == STEAM_MANIFEST_MAGIC:
+            return data
+
+        # 2. 检测并解压 ZIP 格式封装
+        if data[:2] == b"PK":
+            try:
+                with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
+                    for name in zf.namelist():
+                        raw_entry = zf.read(name)
+                        extracted = cls._extract_manifest_payload(raw_entry)
+                        if extracted:
+                            return extracted
+            except Exception:
+                pass
+
+        # 3. 检测 Pro 体系的 10 字节头 + raw DEFLATE，或标准 DEFLATE/zlib 流
+        for offset in (10, 2, 0):
+            if len(data) <= offset:
+                continue
+            # 尝试 Raw DEFLATE (-15)
+            try:
+                decompressor = zlib.decompressobj(-15)
+                decomp = decompressor.decompress(data[offset:])
+                if decomp and decomp[:4] == STEAM_MANIFEST_MAGIC:
+                    return decomp
+            except Exception:
+                pass
+
+            # 尝试标准 zlib (15)
+            try:
+                decomp = zlib.decompress(data[offset:])
+                if decomp and decomp[:4] == STEAM_MANIFEST_MAGIC:
+                    return decomp
+            except Exception:
+                pass
+
+        return None
 
     def _clean_old_manifests(self, depot_id: str, current_gid: str):
         """清理同一 DepotID 的旧版本 manifest 文件（保留当前版本）"""
-        if not self._depotcache_dir:
-            return
-        try:
-            current_file = f"{depot_id}_{current_gid}.manifest"
-            for fname in os.listdir(self._depotcache_dir):
-                if fname.startswith(f"{depot_id}_") and fname.endswith(".manifest"):
-                    if fname != current_file:
-                        old_path = os.path.join(self._depotcache_dir, fname)
-                        try:
-                            os.remove(old_path)
-                            logger.debug(f"Removed old manifest: {fname}")
-                        except OSError:
-                            pass
-        except OSError:
-            pass
+        dirs_to_clean = [self._depotcache_dir]
+        if self._config_depotcache_dir:
+            dirs_to_clean.append(self._config_depotcache_dir)
+
+        current_file = f"{depot_id}_{current_gid}.manifest"
+        for d in dirs_to_clean:
+            if not d or not os.path.isdir(d):
+                continue
+            try:
+                for fname in os.listdir(d):
+                    if fname.startswith(f"{depot_id}_") and fname.endswith(".manifest"):
+                        if fname != current_file:
+                            old_path = os.path.join(d, fname)
+                            try:
+                                os.remove(old_path)
+                                logger.debug(f"Removed old manifest: {fname}")
+                            except OSError:
+                                pass
+            except OSError:
+                pass
 
     @staticmethod
     def _build_manifest_url(host: str, depot_id: str, manifest_gid: str, size: int = 0) -> str:

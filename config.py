@@ -69,6 +69,25 @@ SUDAMA_API_DEPOT_KEYS: str = "https://api.sudama.app/v1/depotkeys"
 TOKEN_API: str = "https://api.993499094.xyz/appaccesstokens.json"
 DEPOT_KEYS_API_ALT: str = "https://api.993499094.xyz/depotkeys.json"
 
+# ============ Manifest 清单仓库与镜像源 ============
+MANIFEST_GITHUB_REPOS: list[str] = [
+    "P-ToyStore/SteamManifestCache_Pro",
+    "Auiowu/ManifestAutoUpdate",
+    "tymolu233/ManifestAutoUpdate",
+    "sean-who/ManifestAutoUpdate",
+]
+
+# GitHub Raw 加速镜像（国内或无代理网络环境回退）
+GITHUB_RAW_MIRRORS: list[str] = [
+    "https://raw.githubusercontent.com",
+    "https://ghfast.top/https://raw.githubusercontent.com",
+    "https://ghproxy.net/https://raw.githubusercontent.com",
+]
+
+# ManifestHub API（SteamAutoCracks 生态）
+MANIFESTHUB_API_URL: str = "https://api.manifesthub2.filegear-sg.me/manifest"
+MANIFESTHUB_API_KEY: str = ""
+
 # ============ 主题 ============
 DEFAULT_THEME_MODE: str = "dark"
 DEFAULT_THEME_COLOR: str = "#0078d4"

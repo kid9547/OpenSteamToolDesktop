@@ -14,6 +14,8 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from core.config_manager import ConfigManager
+from core.local_scanner import LocalGameScanner
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -46,7 +48,7 @@ class GameMetadata:
 
 @dataclass
 class GameInfo:
-    """Lua 配置文件对应的游戏信息"""
+    """游戏信息（兼容标准 OST Lua、外部 Lua、本地磁盘已安装游戏）"""
     app_id: str
     name: str = ""
     has_token: bool = False
@@ -55,22 +57,63 @@ class GameInfo:
     lua_path: str = ""
     manifest_ready: bool = True
     missing_manifests: list[str] = field(default_factory=list)
+    source: str = "ost_lua"              # "ost_lua", "steam_local", "external_lua", "steamtools"
+    is_installed: bool = False
+    install_dir: str = ""
+    size_on_disk: int = 0
+    has_lua: bool = True
+    depots: list[tuple[str, str]] = field(default_factory=list)
+    acf_path: str = ""
 
 
 class LuaGameManager:
-    """基于 Lua 配置文件的游戏库管理器"""
+    """基于 Lua 配置文件与本地全盘扫描的游戏库管理器"""
 
-    def __init__(self, lua_dir: str = ""):
+    def __init__(self, lua_dir: str = "", steam_path: str = "", config_manager: ConfigManager | None = None):
         """初始化游戏管理器
 
         Args:
             lua_dir: OpenSteamTool Lua 配置目录路径
+            steam_path: Steam 安装根目录路径（可选）
+            config_manager: 配置持久化管理器（可选）
         """
         self._lua_dir: str = lua_dir
+        self._steam_path: str = steam_path
+        self._scanner = LocalGameScanner(self._steam_path, self._lua_dir)
         self._games: list[GameInfo] = []
-        logger.debug(f"LuaGameManager initialized with lua_dir: {lua_dir or '(empty)'}")
+        self._config_manager = config_manager or ConfigManager()
+        logger.debug(f"LuaGameManager initialized: lua_dir={lua_dir or '(empty)'}, steam_path={self._steam_path or '(empty)'}")
+
+    # ---- 忽略/隐藏名单管理 ----
+
+    def get_hidden_app_ids(self) -> set[str]:
+        """获取所有已出库或被隐藏忽略的 AppID 集合"""
+        raw = self._config_manager.get("hidden_app_ids", [])
+        if isinstance(raw, list):
+            return set(str(x) for x in raw)
+        return set()
+
+    def hide_game(self, app_id: str) -> None:
+        """将指定 AppID 加入隐藏/忽略黑名单并持久化保存"""
+        hidden = self.get_hidden_app_ids()
+        hidden.add(str(app_id))
+        self._config_manager.set("hidden_app_ids", sorted(list(hidden)))
+        logger.info(f"AppID {app_id} added to hidden blacklist")
+
+    def unhide_game(self, app_id: str) -> None:
+        """将指定 AppID 从隐藏/忽略黑名单中移出并持久化保存"""
+        hidden = self.get_hidden_app_ids()
+        if str(app_id) in hidden:
+            hidden.discard(str(app_id))
+            self._config_manager.set("hidden_app_ids", sorted(list(hidden)))
+            logger.info(f"AppID {app_id} unhidden and removed from blacklist")
 
     # ---- 目录管理 ----
+
+    def set_steam_path(self, path: str) -> None:
+        """设置 Steam 安装根目录并同步扫描器路径"""
+        self._steam_path = path
+        self._scanner.set_paths(self._steam_path, self._lua_dir)
 
     def set_lua_dir(self, path: str) -> None:
         """设置 Lua 配置目录并自动创建
@@ -80,6 +123,7 @@ class LuaGameManager:
         """
         logger.debug(f"Setting Lua directory: {path}")
         self._lua_dir = path
+        self._scanner.set_paths(self._steam_path, self._lua_dir)
         if path and not os.path.exists(path):
             os.makedirs(path, exist_ok=True)
             logger.info(f"Created Lua directory: {path}")
@@ -90,14 +134,124 @@ class LuaGameManager:
 
     # ---- 游戏查询 ----
 
-    def refresh(self) -> list[GameInfo]:
-        """重新扫描 Lua 目录，返回最新游戏列表"""
-        logger.debug(f"Refreshing game list from: {self._lua_dir or '(no directory)'}")
+    def refresh(self, scan_local: bool = False, scan_all_drives: bool = False) -> list[GameInfo]:
+        """重新扫描 Lua 目录，可选扫描本地磁盘与全盘 Steam 库，返回最新游戏列表"""
+        logger.debug(f"Refreshing game list from: {self._lua_dir or '(no directory)'}, scan_local={scan_local}")
         old_count = len(self._games)
-        self._games = self._scan_lua_dir()
+
+        hidden_ids = self.get_hidden_app_ids()
+
+        # 1. 扫描标准 Lua 文件（过滤已出库/隐藏名单）
+        lua_games = self._scan_lua_dir()
+        game_map: dict[str, GameInfo] = {g.app_id: g for g in lua_games if g.app_id not in hidden_ids}
+
+        # 2. 深度扫描本地盘与第三方工具
+        if scan_local and self._steam_path:
+            try:
+                self._scanner.set_paths(self._steam_path, self._lua_dir)
+
+                # A. 扫描非纯数字命名/外部 Lua 文件
+                ext_luas = self._scanner.scan_external_lua_files(hidden_app_ids=hidden_ids)
+                for ext in ext_luas:
+                    aid = ext["app_id"]
+                    if aid not in game_map and aid not in hidden_ids:
+                        game_map[aid] = GameInfo(
+                            app_id=aid,
+                            name=ext.get("name", ""),
+                            lua_path=ext.get("lua_path", ""),
+                            has_lua=True,
+                            source="external_lua",
+                            depots=ext.get("depots", []),
+                            has_manifest=bool(ext.get("depots")),
+                            manifest_ready=ext.get("manifest_ready", True),
+                            missing_manifests=ext.get("missing_manifests", []),
+                        )
+
+                # B. 扫描 SteamTools st.json
+                st_games = self._scanner.scan_steamtools_games(hidden_app_ids=hidden_ids)
+                for st in st_games:
+                    aid = st["app_id"]
+                    if aid not in game_map and aid not in hidden_ids:
+                        game_map[aid] = GameInfo(
+                            app_id=aid,
+                            name=st.get("name", ""),
+                            source="steamtools",
+                            has_lua=False,
+                            depots=st.get("depots", []),
+                            has_manifest=bool(st.get("depots")),
+                            manifest_ready=st.get("manifest_ready", True),
+                            missing_manifests=st.get("missing_manifests", []),
+                        )
+
+                # C. 扫描所有 Steam 库 appmanifest_*.acf 文件
+                installed_games = self._scanner.scan_installed_games(scan_all_drives=scan_all_drives, hidden_app_ids=hidden_ids)
+                for inst in installed_games:
+                    aid = inst["app_id"]
+                    if aid in hidden_ids:
+                        continue
+                    if aid in game_map:
+                        g = game_map[aid]
+                        g.is_installed = True
+                        g.install_dir = inst.get("install_dir", "")
+                        g.size_on_disk = inst.get("size_on_disk", 0)
+                        g.acf_path = inst.get("acf_path", "")
+                        if not g.name and inst.get("name"):
+                            g.name = inst["name"]
+                        if not g.depots and inst.get("depots"):
+                            g.depots = inst["depots"]
+                    else:
+                        game_map[aid] = GameInfo(
+                            app_id=aid,
+                            name=inst.get("name", ""),
+                            source="steam_local",
+                            is_installed=True,
+                            install_dir=inst.get("install_dir", ""),
+                            size_on_disk=inst.get("size_on_disk", 0),
+                            has_lua=False,
+                            depots=inst.get("depots", []),
+                            has_manifest=bool(inst.get("depots")),
+                            manifest_ready=inst.get("manifest_ready", True),
+                            missing_manifests=inst.get("missing_manifests", []),
+                            acf_path=inst.get("acf_path", ""),
+                        )
+            except Exception as e:
+                logger.warning(f"Error during deep local scan: {e}")
+
+        self._games = list(game_map.values())
         new_count = len(self._games)
-        logger.info(f"Game list refreshed: {old_count} -> {new_count} games")
+        logger.info(f"Game list refreshed: {old_count} -> {new_count} games (OST + Local + External)")
         return self._games
+
+    def deep_scan(self, scan_all_drives: bool = True) -> list[GameInfo]:
+        """全盘深度扫描（扫描全盘 Steam 库安装游戏与第三方工具配置）"""
+        return self.refresh(scan_local=True, scan_all_drives=scan_all_drives)
+
+    def take_over_game(self, app_id: str) -> bool:
+        """为通过本地盘/第三方工具发现的游戏一键生成标准 OST Lua 配置并纳入管理"""
+        target = None
+        for g in self._games:
+            if g.app_id == app_id:
+                target = g
+                break
+        if not target:
+            return False
+
+        if not self._lua_dir:
+            return False
+
+        ok = self._scanner.take_over_game_as_ost_lua(
+            app_id=target.app_id,
+            name=target.name,
+            depots=target.depots,
+        )
+        if ok:
+            self.unhide_game(app_id)
+            target.has_lua = True
+            target.source = "ost_lua"
+            target.lua_path = os.path.join(self._lua_dir, f"{app_id}.lua")
+            self._ensure_manifest_resolver()
+            logger.info(f"Took over game {app_id} into OpenSteamTool management")
+        return ok
 
     def get_games(self) -> list[GameInfo]:
         """获取游戏列表（优先返回缓存，首次调用时扫描）"""
@@ -162,6 +316,7 @@ class LuaGameManager:
 
     def add_game_basic(self, app_id: str, name: str = "") -> bool:
         """即时入库（立即写入基础 Lua 文件，后续后台拉取完整元数据时覆盖更新）"""
+        self.unhide_game(app_id)
         filepath = ""
         if self._lua_dir:
             try:
@@ -204,6 +359,7 @@ class LuaGameManager:
         Returns:
             是否写入成功
         """
+        self.unhide_game(metadata.app_id)
         if not self._lua_dir:
             logger.error("Cannot add game: lua_dir is not set")
             return False
@@ -446,33 +602,57 @@ class LuaGameManager:
         )
         return metadata
 
-    def remove_game(self, app_id: str) -> bool:
-        """将游戏移出库（删除 Lua 文件）
+    def remove_game(
+        self,
+        app_id: str,
+        delete_acf: bool = False,
+        hide_only: bool = False,
+    ) -> bool:
+        """将游戏移出库或彻底删除
 
         Args:
             app_id: Steam AppID
+            delete_acf: 是否同时删除本地 Steam 清单文件 (appmanifest_*.acf) 及清理第三方工具记录
+            hide_only: 是否仅加入忽略隐藏黑名单（不删除物理文件）
 
         Returns:
-            是否删除成功
+            是否删除/移除成功
         """
-        if not self._lua_dir:
-            logger.error("Cannot remove game: lua_dir is not set")
-            return False
+        app_id_str = str(app_id)
+        logger.info(f"Removing/hiding game {app_id_str}: delete_acf={delete_acf}, hide_only={hide_only}")
 
-        filepath = os.path.join(self._lua_dir, f"{app_id}.lua")
-        logger.info(f"Removing game {app_id}, file: {filepath}")
-        try:
-            if os.path.exists(filepath):
-                os.remove(filepath)
-                # 增量更新内存列表
-                self._games = [g for g in self._games if g.app_id != app_id]
-                logger.debug(f"Game {app_id} removed from memory list")
-            else:
-                logger.warning(f"Lua file not found for {app_id}: {filepath}")
-            return True
-        except OSError as e:
-            logger.error(f"Failed to remove game {app_id}: {e}")
-            return False
+        # 查找目标 GameInfo
+        target = None
+        for g in self._games:
+            if g.app_id == app_id_str:
+                target = g
+                break
+
+        # 1. 物理文件清理（非仅隐藏模式）
+        if not hide_only:
+            # A. 删除 OST Lua 配置文件
+            if self._lua_dir:
+                filepath = os.path.join(self._lua_dir, f"{app_id_str}.lua")
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                        logger.info(f"Deleted Lua file for {app_id_str}: {filepath}")
+                    except OSError as e:
+                        logger.error(f"Failed to delete Lua file {filepath}: {e}")
+
+            # B. 删除本地 Steam 清单文件 (.acf) 及清理第三方配置
+            if delete_acf:
+                acf_path = getattr(target, "acf_path", "") if target else ""
+                self._scanner.remove_acf(app_id_str, acf_path)
+                self._scanner.remove_from_steamtools(app_id_str)
+
+        # 2. 加入持久化忽略黑名单，防止后续刷新重新带出
+        self.hide_game(app_id_str)
+
+        # 3. 增量更新内存列表
+        self._games = [g for g in self._games if g.app_id != app_id_str]
+        logger.debug(f"Game {app_id_str} removed from memory list")
+        return True
 
     def clear_all(self) -> int:
         """清空所有游戏（删除所有 .lua 文件）
@@ -599,6 +779,7 @@ class LuaGameManager:
                     if not has_file:
                         missing.append(f"{did}_{gid}")
 
+                info.depots = [(did, gid) for did, gid in manifest_matches]
                 info.missing_manifests = missing
                 info.manifest_ready = (len(missing) == 0)
             else:

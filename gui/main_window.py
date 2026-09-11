@@ -65,7 +65,12 @@ class MainWindow(MSFluentWindow):
         from gui.inject_page import InjectPage
         from gui.search_page import SearchPage
         from gui.library_page import LibraryPage
+        from gui.settings_page import SettingsPage
         from config import ENABLE_ACCELERATOR_PAGE
+
+        # 确保 game_manager 拥有准确的 steam_path
+        if self._bridge and self._bridge.get_steam_path():
+            self._game_manager.set_steam_path(self._bridge.get_steam_path())
 
         # 创建页面
         self.home_page = HomePage(
@@ -80,6 +85,14 @@ class MainWindow(MSFluentWindow):
         self.search_page = SearchPage(game_manager, bridge=bridge, parent=self)
 
         self.library_page = LibraryPage(game_manager, bridge=bridge, parent=self)
+
+        self.settings_page = SettingsPage(
+            config_manager,
+            bridge=bridge,
+            game_manager=game_manager,
+            parent=self,
+        )
+        self.settings_page.scan_requested.connect(self.library_page._load_games_async)
 
         if ENABLE_ACCELERATOR_PAGE:
             from gui.accelerate_page import AcceleratePage
@@ -109,7 +122,14 @@ class MainWindow(MSFluentWindow):
         else:
             self._accelerate_nav_btn = None
 
-        # 底部：重启 Steam 按钮
+        # 底部：设置与重启 Steam
+        self._settings_nav_btn = self.addSubInterface(
+            self.settings_page,
+            FluentIcon.SETTING,
+            "设置",
+            position=NavigationItemPosition.BOTTOM,
+        )
+
         self._restart_nav_item = self.navigationInterface.addItem(
             routeKey="restart_steam",
             icon=FluentIcon.POWER_BUTTON,

@@ -163,71 +163,206 @@ class ManifestResolver:
             message=msg,
         )
 
+    def diagnose_app(self, app_id: str) -> ManifestReadiness:
+        """诊断指定 AppID 的游戏清单就绪情况（基于其 Lua 配置文件）"""
+        lua_path = os.path.join(self.lua_dir, f"{app_id}.lua") if self.lua_dir else ""
+        return self.diagnose_lua_file(lua_path)
+
+    def update_lua_manifest(self, app_id: str, depot_id: str, manifest_gid: str, size: int = 0) -> bool:
+        """在游戏的 Lua 配置文件中更新或追加 setManifestid 绑定"""
+        if not self.lua_dir:
+            return False
+        lua_path = os.path.join(self.lua_dir, f"{app_id}.lua")
+        if not os.path.isfile(lua_path):
+            return False
+        try:
+            content = Path(lua_path).read_text(encoding="utf-8", errors="replace")
+            pattern = rf'setmanifestid\s*\(\s*{depot_id}\s*,\s*["\']?\d+["\']?(?:\s*,\s*[^)]*)?\)'
+            new_line = (
+                f'setManifestid({depot_id}, "{manifest_gid}", {size})'
+                if size > 0 else
+                f'setManifestid({depot_id}, "{manifest_gid}")'
+            )
+            if re.search(pattern, content, re.IGNORECASE):
+                new_content = re.sub(pattern, new_line, content, flags=re.IGNORECASE)
+            else:
+                new_content = content.rstrip() + f"\n{new_line}\n"
+            Path(lua_path).write_text(new_content, encoding="utf-8")
+            logger.info(f"Updated {lua_path} with {new_line}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to update Lua manifest in {lua_path}: {e}")
+            return False
+
     def resolve_manifests(
         self,
         app_id: str,
-        depots: list[tuple[str, str, int]] | None = None,
-    ) -> tuple[bool, str]:
-        """为指定游戏执行自动清单解析与补全流水线"""
+        depots: list[Any] | None = None,
+        dlc_ids: list[str] | None = None,
+    ) -> tuple[bool, str, int]:
+        """为指定游戏执行自动清单解析与多源补全流水线
+
+        Args:
+            app_id: 游戏 AppID
+            depots: [(depot_id, manifest_gid, size, [owner_app_id]), ...]（可选）
+            dlc_ids: DLC AppID 列表（可选）
+
+        Returns:
+            (is_ready: 是否全部就绪, message: 说明信息, downloaded_count: 本次成功下载清单数)
+        """
         if not self._steam_path or not os.path.isdir(self._steam_path):
-            return False, "Steam 安装路径无效"
+            return False, "Steam 安装路径无效", 0
 
         if self.depotcache_dir:
             os.makedirs(self.depotcache_dir, exist_ok=True)
         if self.config_depotcache_dir:
             os.makedirs(self.config_depotcache_dir, exist_ok=True)
 
-        # 步骤 1: 检查现有清单状态
-        if depots:
-            all_exist = all(
-                self.check_manifest_exists(d[0], d[1])
-                for d in depots
-                if len(d) >= 2 and d[1]
-            )
-            if all_exist:
-                return True, "游戏清单文件已全部就绪"
-
-        # 步骤 2: 尝试从社区镜像获取 zip 包
-        mirror_success, extracted_manifests = self._fetch_from_mirrors(app_id)
-        if mirror_success and extracted_manifests > 0:
-            logger.info(
-                f"Successfully extracted {extracted_manifests} manifest(s) for AppID {app_id} from mirror"
-            )
-
-        # 步骤 3: 尝试从 Steam CDN 补充可能公开的清单
-        if depots:
-            missing_depots = [
-                d for d in depots
-                if len(d) >= 2 and d[1] and not self.check_manifest_exists(d[0], d[1])
-            ]
-            if missing_depots:
-                try:
-                    downloader = ManifestDownloader(self._steam_path)
-                    downloader.download_manifests(missing_depots, app_id=app_id)
-                    downloader.close()
-                except Exception as e:
-                    logger.debug(f"CDN download failed: {e}")
-
-        # 步骤 4: 最终检查
+        downloaded_count = 0
         lua_path = os.path.join(self.lua_dir, f"{app_id}.lua") if self.lua_dir else ""
+
+        # 步骤 1: 整理待获取的 depot 列表
+        target_depots: list[tuple[str, str, int, str]] = []
+
+        if depots:
+            for item in depots:
+                if not item:
+                    continue
+                did = str(item[0]) if len(item) > 0 else ""
+                gid = str(item[1]) if len(item) > 1 and item[1] is not None else ""
+                size = int(item[2]) if len(item) > 2 and item[2] else 0
+                owner = str(item[3]) if len(item) > 3 and item[3] else app_id
+                if did:
+                    target_depots.append((did, gid, size, owner))
+
+        # 若未提供 depots 或 Lua 已存在，从 Lua 文件补充可能缺失的条目
+        if os.path.isfile(lua_path):
+            try:
+                lua_content = Path(lua_path).read_text(encoding="utf-8", errors="replace")
+                # 提取已有的 setManifestid
+                matches = re.findall(
+                    r'setmanifestid\s*\(\s*(\d+)\s*,\s*["\']?(\d+)["\']?(?:\s*,\s*(\d+))?\)',
+                    lua_content,
+                    re.IGNORECASE,
+                )
+                existing_dids = {d[0] for d in target_depots}
+                for did, gid, sz in matches:
+                    if did not in existing_dids:
+                        target_depots.append((did, gid, int(sz) if sz else 0, app_id))
+                        existing_dids.add(did)
+
+                # 提取 addappid 列表作为候选 depot
+                add_matches = re.findall(r'addappid\s*\(\s*(\d+)', lua_content, re.IGNORECASE)
+                for did in add_matches:
+                    if did != app_id and did not in existing_dids:
+                        target_depots.append((did, "", 0, app_id))
+                        existing_dids.add(did)
+            except Exception as e:
+                logger.debug(f"Error parsing Lua {lua_path}: {e}")
+
+        # 步骤 2: 检查哪些清单已就绪
+        missing_depots = [
+            d for d in target_depots
+            if not d[1] or not self.check_manifest_exists(d[0], d[1])
+        ]
+
+        if not missing_depots and target_depots:
+            return True, "游戏清单文件已全部就绪", 0
+
+        # 步骤 3: 使用多源下载器下载缺失的清单
+        depots_with_gid = [d for d in missing_depots if d[1]]
+        if depots_with_gid:
+            try:
+                downloader = ManifestDownloader(self._steam_path)
+                batch_res = downloader.download_manifests(depots_with_gid, app_id=app_id)
+                downloaded_count += batch_res.success
+                downloader.close()
+            except Exception as e:
+                logger.warning(f"Batch manifest download error for {app_id}: {e}")
+
+        # 步骤 4: 对于仍缺少 manifest_gid 或未成功下载的 depot，尝试检索匹配 Tag
+        still_missing = [
+            d for d in target_depots
+            if not d[1] or not self.check_manifest_exists(d[0], d[1])
+        ]
+
+        if still_missing:
+            downloader = ManifestDownloader(self._steam_path)
+            for did, gid, size, owner in still_missing:
+                # 尝试从 P-ToyStore 的 matching-refs 检索可用清单版本
+                found_gid = self._lookup_tag_gid_for_depot(did)
+                if found_gid:
+                    dl_res = downloader._download_single(
+                        depot_id=did,
+                        manifest_gid=found_gid,
+                        size=size,
+                        cdn_hosts=[],
+                        app_id=app_id,
+                        owner_app_id=owner,
+                    )
+                    if dl_res.success:
+                        downloaded_count += 1
+                        # 自动将发现的清单 GID 同步写回 Lua 文件
+                        self.update_lua_manifest(app_id, did, found_gid, size)
+            downloader.close()
+
+        # 步骤 5: 尝试从社区 zip 镜像补充
+        still_missing_after = [
+            d for d in target_depots
+            if not d[1] or not self.check_manifest_exists(d[0], d[1])
+        ]
+        if still_missing_after:
+            mirror_success, extracted = self._fetch_from_mirrors(app_id)
+            if mirror_success and extracted > 0:
+                downloaded_count += extracted
+
+        # 步骤 6: 最终诊断判断就绪状态
         if os.path.isfile(lua_path):
             diag = self.diagnose_lua_file(lua_path)
             if diag.is_ready:
-                return True, "游戏清单已成功自动补全，Steam 中可直接下载！"
+                return True, f"游戏清单已成功自动补全（本次下载 {downloaded_count} 个），Steam 中可直接下载！", downloaded_count
             else:
-                return False, f"未能自动获取全部清单，尚缺少: {', '.join(diag.missing_manifests)}"
+                return (
+                    False,
+                    f"未能自动获取全部清单（已下载 {downloaded_count} 个），尚缺少: {', '.join(diag.missing_manifests[:3])}",
+                    downloaded_count,
+                )
 
-        if depots:
-            remaining_missing = [
-                f"{d[0]}_{d[1]}"
-                for d in depots
-                if len(d) >= 2 and d[1] and not self.check_manifest_exists(d[0], d[1])
-            ]
-            if not remaining_missing:
-                return True, "游戏清单已全部就绪！"
-            return False, f"未能自动获取清单，尚缺少: {', '.join(remaining_missing[:3])}"
+        remaining_missing = [
+            f"{d[0]}_{d[1]}"
+            for d in target_depots
+            if d[1] and not self.check_manifest_exists(d[0], d[1])
+        ]
+        if not remaining_missing:
+            return True, f"游戏清单已全部就绪！（本次下载 {downloaded_count} 个）", downloaded_count
 
-        return True, "入库完成"
+        return (
+            False,
+            f"未能自动获取全部清单（已下载 {downloaded_count} 个），尚缺少: {', '.join(remaining_missing[:3])}",
+            downloaded_count,
+        )
+
+    def _lookup_tag_gid_for_depot(self, depot_id: str) -> str | None:
+        """从 GitHub 仓库检索指定 Depot 的可用清单 GID"""
+        url = f"https://api.github.com/repos/P-ToyStore/SteamManifestCache_Pro/git/matching-refs/tags/{depot_id}_"
+        try:
+            resp = self._http.get(url, timeout=8.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and data:
+                    best_gid = None
+                    for item in data:
+                        ref = item.get("ref", "")
+                        tag = ref.split("/")[-1]
+                        m = re.match(rf'^{depot_id}_(\d+)$', tag)
+                        if m:
+                            gid = m.group(1)
+                            if best_gid is None or int(gid) > int(best_gid):
+                                best_gid = gid
+                    return best_gid
+        except Exception:
+            pass
+        return None
 
     def _fetch_from_mirrors(self, app_id: str) -> tuple[bool, int]:
         """尝试从公共镜像拉取游戏资源 ZIP 并部署清单"""

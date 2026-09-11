@@ -852,21 +852,30 @@ class SearchPage(ScrollArea):
                 except Exception:
                     pass
 
-            depots_tuple = [(d.depot_id, d.manifest_gid, d.size) for d in metadata.depots if d.manifest_gid]
+            # 收集主游戏与所有 DLC 的清单条目
+            depots_tuple = []
+            for d in metadata.depots:
+                if d.manifest_gid:
+                    depots_tuple.append((d.depot_id, d.manifest_gid, d.size, app_id))
+            for dlc_id, d in metadata.dlc_depots:
+                if d.manifest_gid:
+                    depots_tuple.append((d.depot_id, d.manifest_gid, d.size, str(dlc_id)))
+
             if steam_dir:
                 try:
                     resolver = ManifestResolver(steam_dir)
-                    resolver.resolve_manifests(app_id, depots_tuple)
+                    resolver.resolve_manifests(app_id, depots_tuple, dlc_ids=metadata.dlc_ids)
                     resolver.close()
                 except Exception as e:
                     logger.warning(f"Auto manifest resolution error for {app_id}: {e}")
 
-            # 检查是否有缺少本地清单的 depot
+            # 检查是否有缺少本地清单的 depot（包括主游戏与 DLC）
             missing_manifests = []
+            all_depots_list = list(metadata.depots) + [d for _, d in metadata.dlc_depots]
             if steam_dir:
                 depotcache_dir = os.path.join(steam_dir, "depotcache")
                 config_depotcache_dir = os.path.join(steam_dir, "config", "depotcache")
-                for d in metadata.depots:
+                for d in all_depots_list:
                     if d.manifest_gid:
                         mf_name = f"{d.depot_id}_{d.manifest_gid}.manifest"
                         in_dc = os.path.isfile(os.path.join(depotcache_dir, mf_name)) and os.path.getsize(os.path.join(depotcache_dir, mf_name)) > 0
@@ -880,7 +889,7 @@ class SearchPage(ScrollArea):
                 "game_name": metadata.name or game_name,
                 "depots": len(metadata.depots),
                 "dlcs": len(metadata.dlc_ids),
-                "manifest_count": sum(1 for d in metadata.depots if d.manifest_gid),
+                "manifest_count": sum(1 for d in all_depots_list if d.manifest_gid),
                 "depot_keys": sum(1 for d in metadata.depots if d.depot_key),
                 "has_access_token": bool(metadata.access_token),
                 "missing_manifests": missing_manifests,
