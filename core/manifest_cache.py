@@ -28,6 +28,35 @@ class ManifestRecord:
         return f"{self.depot_id}_{self.manifest_gid}"
 
 
+@dataclass
+class AppManifestAudit:
+    """单个游戏（AppID）的清单完整性审计结果。"""
+
+    app_id: str
+    lua_path: str = ""
+    declared: int = 0
+    missing: list[str] = field(default_factory=list)
+    damaged: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.missing and not self.damaged
+
+    @property
+    def present(self) -> int:
+        return self.declared - len(self.missing) - len(self.damaged)
+
+    def summary(self) -> str:
+        if self.ok:
+            return f"AppID {self.app_id}：{self.declared} 个清单全部就绪"
+        parts = [f"AppID {self.app_id}：{self.present}/{self.declared} 就绪"]
+        if self.missing:
+            parts.append(f"缺失 {len(self.missing)} 个")
+        if self.damaged:
+            parts.append(f"损坏 {len(self.damaged)} 个")
+        return "，".join(parts)
+
+
 class ManifestCacheManager:
     """统一管理 depotcache 与 config/depotcache 中的清单文件。"""
 
@@ -172,6 +201,72 @@ class ManifestCacheManager:
                 continue
             referenced.update(f"{depot}_{gid}" for depot, gid in pattern.findall(text))
         return referenced
+
+    # ── 逐游戏完整性审计 ──────────────────────────────────────
+    def audit(self, lua_dir: str | Path | None = None) -> list["AppManifestAudit"]:
+        """逐游戏比对「Lua 声明的 (depot, gid)」与「本地实际存在的清单」。
+
+        这是"清单下载不全"的**检测**手段：只有逐游戏列出缺了哪些 depot 的清单，
+        用户才能知道该补什么；此前只能看到一堆孤立的 manifest 文件。
+
+        Returns:
+            按 AppID 排序的 :class:`AppManifestAudit` 列表（仅包含声称有
+            ``setManifestid`` 的游戏；完全没有清单绑定的游戏不参与判定）。
+        """
+        if lua_dir:
+            directory = Path(lua_dir)
+        elif self.steam_path:
+            directory = self.steam_path / "config" / "lua"
+        else:
+            return []
+        if not directory.is_dir():
+            return []
+
+        present: dict[str, str] = {}
+        for record in self.scan():
+            # 记录有效副本（优先）或至少存在的路径
+            valid = next((p for p in record.paths if self.is_valid_file(p)), None)
+            if valid:
+                present[record.key] = valid
+            elif record.paths:
+                present[record.key] = ""
+
+        bindings_re = re.compile(
+            r"setmanifestid\s*\(\s*(\d+)\s*,\s*[\"']?(\d+)",
+            re.IGNORECASE,
+        )
+        audits: list[AppManifestAudit] = []
+        for lua_path in sorted(directory.glob("*.lua")):
+            stem = lua_path.stem
+            if not stem.isdigit():
+                continue
+            try:
+                text = lua_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            declared = bindings_re.findall(text)
+            if not declared:
+                continue
+
+            missing: list[str] = []
+            damaged: list[str] = []
+            for depot, gid in declared:
+                key = f"{depot}_{gid}"
+                if key not in present:
+                    missing.append(key)
+                elif not present[key]:
+                    damaged.append(key)
+
+            audits.append(
+                AppManifestAudit(
+                    app_id=stem,
+                    lua_path=str(lua_path),
+                    declared=len(declared),
+                    missing=missing,
+                    damaged=damaged,
+                )
+            )
+        return sorted(audits, key=lambda item: int(item.app_id))
 
     def orphaned(self, lua_dir: str | Path | None = None) -> list[ManifestRecord]:
         referenced = self.referenced_keys(lua_dir)

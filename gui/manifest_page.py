@@ -119,6 +119,30 @@ class ManifestPage(ScrollArea):
         # ── 操作按钮 ──
         layout.addWidget(self._build_action_row(container))
 
+        # ── 清单不全的游戏（逐游戏审计）──
+        incomplete_title = StrongBodyLabel("清单不全的游戏", container)
+        incomplete_title.setStyleSheet("font-size: 14px; margin-top: 6px;")
+        layout.addWidget(incomplete_title)
+
+        self._incomplete_label = BodyLabel("尚未扫描", container)
+        self._incomplete_label.setStyleSheet("color: #888; font-size: 12px;")
+        self._incomplete_label.setWordWrap(True)
+        layout.addWidget(self._incomplete_label)
+
+        self._incomplete_table = QTableWidget(0, 4, container)
+        self._incomplete_table.setHorizontalHeaderLabels(["AppID", "就绪/声明", "缺失清单", "损坏清单"])
+        self._incomplete_table.verticalHeader().setVisible(False)
+        self._incomplete_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._incomplete_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        inc_header = self._incomplete_table.horizontalHeader()
+        inc_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        inc_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        inc_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        inc_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self._incomplete_table.setMinimumHeight(150)
+        self._incomplete_table.setMaximumHeight(240)
+        layout.addWidget(self._incomplete_table)
+
         # ── 清单表格 ──
         self._table = QTableWidget(0, 5, container)
         self._table.setHorizontalHeaderLabels(["Depot", "Manifest GID", "状态", "大小", "所在目录"])
@@ -151,6 +175,7 @@ class ManifestPage(ScrollArea):
             ("valid", "有效"),
             ("invalid", "损坏"),
             ("orphan", "孤儿"),
+            ("incomplete", "清单不全的游戏"),
             ("size", "占用空间"),
         ):
             card = CardWidget(row)
@@ -273,6 +298,17 @@ class ManifestPage(ScrollArea):
             "orphan": orphan,
             "size": total_size,
             "referenced": len(referenced),
+            "audits": [
+                {
+                    "app_id": audit.app_id,
+                    "declared": audit.declared,
+                    "present": audit.present,
+                    "missing": list(audit.missing),
+                    "damaged": list(audit.damaged),
+                    "ok": audit.ok,
+                }
+                for audit in cache.audit(lua_dir)
+            ],
         }
 
     def _on_scan_done(self, result: dict) -> None:
@@ -284,6 +320,35 @@ class ManifestPage(ScrollArea):
         self._stat_cards["invalid"].setText(str(result["invalid"]))
         self._stat_cards["orphan"].setText(str(result["orphan"]))
         self._stat_cards["size"].setText(_human_size(result["size"]))
+
+        audits = result.get("audits", [])
+        incomplete = [item for item in audits if not item["ok"]]
+        self._stat_cards["incomplete"].setText(str(len(incomplete)))
+
+        self._incomplete_table.setRowCount(len(incomplete))
+        for row, item in enumerate(incomplete):
+            self._incomplete_table.setItem(row, 0, QTableWidgetItem(item["app_id"]))
+            self._incomplete_table.setItem(
+                row, 1, QTableWidgetItem(f"{item['present']}/{item['declared']}")
+            )
+            self._incomplete_table.setItem(
+                row, 2, QTableWidgetItem(", ".join(item["missing"]) or "—")
+            )
+            self._incomplete_table.setItem(
+                row, 3, QTableWidgetItem(", ".join(item["damaged"]) or "—")
+            )
+
+        if incomplete:
+            self._incomplete_label.setText(
+                f"发现 {len(incomplete)} 个游戏的清单不全，点击上方「一键补全缺失清单」即可联网补齐。"
+            )
+            self._incomplete_label.setStyleSheet("color: #ff9800; font-size: 12px;")
+        elif audits:
+            self._incomplete_label.setText(f"{len(audits)} 个游戏的清单都已就绪。")
+            self._incomplete_label.setStyleSheet("color: #52c41a; font-size: 12px;")
+        else:
+            self._incomplete_label.setText("没有发现声明了 setManifestid 的游戏。")
+            self._incomplete_label.setStyleSheet("color: #888; font-size: 12px;")
 
         self._table.setRowCount(len(self._records))
         for row, item in enumerate(self._records):
@@ -302,6 +367,7 @@ class ManifestPage(ScrollArea):
             f"扫描完成：{result['total']} 个清单，Lua 中引用 {result['referenced']} 个。"
             + (f" 有 {result['invalid']} 个损坏，建议删除后重新补全。" if result["invalid"] else "")
             + (f" 有 {result['orphan']} 个孤儿清单可清理释放空间。" if result["orphan"] else "")
+            + (f" {len(incomplete)} 个游戏清单不全。" if incomplete else "")
         )
         self.manifests_changed.emit()
 

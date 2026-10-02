@@ -47,3 +47,75 @@ def test_delete_rejects_path_traversal(tmp_path):
         pass
     else:
         raise AssertionError("invalid manifest key was accepted")
+
+
+# ── 逐游戏完整性审计（"清单下载不全"的检测手段） ──────────────
+def _audit_tree(tmp_path):
+    """构造：100 完整 / 200 缺一个 / 300 有一个损坏 / 400 无绑定。"""
+    depot_dir = tmp_path / "depotcache"
+    lua_dir = tmp_path / "config" / "lua"
+    depot_dir.mkdir(parents=True)
+    lua_dir.mkdir(parents=True)
+
+    (depot_dir / "101_201.manifest").write_bytes(STEAM_MANIFEST_MAGIC + b"x")
+    (depot_dir / "201_301.manifest").write_bytes(STEAM_MANIFEST_MAGIC + b"w")
+    (depot_dir / "301_401.manifest").write_bytes(b"broken-bytes")
+    (depot_dir / "302_402.manifest").write_bytes(STEAM_MANIFEST_MAGIC + b"y")
+
+    (lua_dir / "100.lua").write_text('addappid(100)\nsetManifestid(101, "201")\n', encoding="utf-8")
+    (lua_dir / "200.lua").write_text(
+        'addappid(200)\nsetManifestid(201, "301")\nsetManifestid(202, "302")\n',
+        encoding="utf-8",
+    )
+    (lua_dir / "300.lua").write_text(
+        'addappid(300)\nsetManifestid(301, "401")\nsetManifestid(302, "402")\n',
+        encoding="utf-8",
+    )
+    (lua_dir / "400.lua").write_text("addappid(400)\n", encoding="utf-8")
+    # 非数字文件名必须被忽略
+    (lua_dir / "manifest.lua").write_text('setManifestid(999, "999")\n', encoding="utf-8")
+    return ManifestCacheManager(str(tmp_path)), lua_dir
+
+
+def test_audit_reports_complete_missing_and_damaged(tmp_path):
+    cache, lua_dir = _audit_tree(tmp_path)
+    audits = {item.app_id: item for item in cache.audit(lua_dir)}
+
+    # 没有 setManifestid 绑定 / 非数字文件名的 Lua 不参与判定
+    assert set(audits) == {"100", "200", "300"}
+
+    assert audits["100"].ok is True
+    assert audits["100"].present == 1
+    assert audits["100"].summary().endswith("全部就绪")
+
+    assert audits["200"].ok is False
+    assert audits["200"].missing == ["202_302"]
+    assert audits["200"].damaged == []
+    assert audits["200"].present == 1
+    assert audits["200"].declared == 2
+
+    assert audits["300"].ok is False
+    assert audits["300"].missing == []
+    assert audits["300"].damaged == ["301_401"]
+    assert audits["300"].present == 1
+    assert "损坏 1 个" in audits["300"].summary()
+
+
+def test_audit_is_sorted_by_app_id(tmp_path):
+    cache, lua_dir = _audit_tree(tmp_path)
+    assert [item.app_id for item in cache.audit(lua_dir)] == ["100", "200", "300"]
+
+
+def test_audit_requires_lua_dir(tmp_path):
+    depot_dir = tmp_path / "depotcache"
+    depot_dir.mkdir(parents=True)
+    (depot_dir / "1_2.manifest").write_bytes(STEAM_MANIFEST_MAGIC + b"x")
+    cache = ManifestCacheManager(str(tmp_path))
+
+    assert cache.audit("") == []
+    assert cache.audit(tmp_path / "does-not-exist") == []
+
+
+def test_audit_accepts_string_lua_dir(tmp_path):
+    cache, lua_dir = _audit_tree(tmp_path)
+    assert len(cache.audit(str(lua_dir))) == 3

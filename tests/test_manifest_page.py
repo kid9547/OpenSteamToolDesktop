@@ -184,6 +184,80 @@ def test_import_rejects_bad_filename(qapp, steam_tree, tmp_path):
         page.deleteLater()
 
 
+def test_scan_worker_reports_incomplete_apps(qapp, steam_tree):
+    """逐游戏审计必须体现在扫描结果里 —— 这是"下载不全"的可视化入口。"""
+    steam, lua = steam_tree
+    # 让 100.lua 声明一个本地不存在的清单
+    (lua / "100.lua").write_text(
+        'addappid(100)\nsetManifestid(101, "200", 1024)\nsetManifestid(999, "888")\n',
+        encoding="utf-8",
+    )
+
+    result = ManifestPage._scan_worker(str(steam), str(lua))
+
+    audits = {item["app_id"]: item for item in result["audits"]}
+    assert audits["100"]["ok"] is False
+    assert audits["100"]["missing"] == ["999_888"]
+    assert audits["100"]["present"] == 1
+    assert audits["100"]["declared"] == 2
+    # 102.lua 声明的 102_201 存在 → 完整
+    assert audits["102"]["ok"] is True
+
+
+def test_scan_worker_lists_all_audits_including_ok(qapp, steam_tree):
+    steam, lua = steam_tree
+    result = ManifestPage._scan_worker(str(steam), str(lua))
+    assert {item["app_id"] for item in result["audits"]} == {"100", "102"}
+
+
+def test_page_renders_incomplete_table(qapp, steam_tree):
+    steam, lua = steam_tree
+    (lua / "100.lua").write_text(
+        'addappid(100)\nsetManifestid(101, "200")\nsetManifestid(999, "888")\n',
+        encoding="utf-8",
+    )
+    page = _page(qapp, steam_tree)
+    try:
+        page._on_scan_done(ManifestPage._scan_worker(str(steam), str(lua)))
+
+        assert page._stat_cards["incomplete"].text() == "1"
+        assert page._incomplete_table.rowCount() == 1
+        assert page._incomplete_table.item(0, 0).text() == "100"
+        assert page._incomplete_table.item(0, 1).text() == "1/2"
+        assert "999_888" in page._incomplete_table.item(0, 2).text()
+        assert "清单不全" in page._incomplete_label.text()
+    finally:
+        page.deleteLater()
+
+
+def test_page_reports_all_ready_when_audit_clean(qapp, steam_tree):
+    steam, lua = steam_tree
+    page = _page(qapp, steam_tree)
+    try:
+        page._on_scan_done(ManifestPage._scan_worker(str(steam), str(lua)))
+        assert page._incomplete_table.rowCount() == 0
+        assert "都已就绪" in page._incomplete_label.text()
+        assert page._stat_cards["incomplete"].text() == "0"
+    finally:
+        page.deleteLater()
+
+
+def test_page_handles_no_audits(qapp, tmp_path):
+    steam = tmp_path / "steam"
+    (steam / "depotcache").mkdir(parents=True)
+    (steam / "config" / "lua").mkdir(parents=True)
+    page = ManifestPage(
+        _FakeGameManager(str(steam), str(steam / "config" / "lua")),
+        bridge=_FakeBridge(str(steam), str(steam / "config" / "lua")),
+    )
+    try:
+        page._on_scan_done(ManifestPage._scan_worker(str(steam), str(steam / "config" / "lua")))
+        assert "没有发现声明了" in page._incomplete_label.text()
+        assert page._stat_cards["incomplete"].text() == "0"
+    finally:
+        page.deleteLater()
+
+
 def test_set_busy_toggles_all_action_buttons(qapp, steam_tree):
     page = _page(qapp, steam_tree)
     try:
