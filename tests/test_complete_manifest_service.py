@@ -7,7 +7,6 @@ import pytest
 
 from core.complete_manifest_service import (
     STATUS_ALREADY,
-    STATUS_DOWNLOADED,
     STATUS_FAILED,
     STATUS_INVALID,
     STATUS_MISSING,

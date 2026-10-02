@@ -5,8 +5,6 @@ import io
 import zlib
 import zipfile
 
-import pytest
-
 from core.manifest_archive import (
     ArchiveManifest,
     ManifestArchive,

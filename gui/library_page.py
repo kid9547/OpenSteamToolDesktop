@@ -681,9 +681,13 @@ class LibraryPage(ScrollArea):
     # ---- D 加密（Denuvo）票据授权 ----
 
     def _on_denuvo_ticket(self, app_id: str):
-        """打开 D 加密票据授权对话框（延迟到事件循环空闲，避免与右键菜单冲突）"""
+        """打开 D 加密「授权向导」（延迟到事件循环空闲，避免与右键菜单冲突）。
+
+        向导把「登录拥有游戏的账号 → 启动一次游戏 → 提取票据 → 写入并生效」
+        这条链固化成可操作的步骤，并在界面里实时显示当前账号与票据状态。
+        """
         def _do_open():
-            from gui.denuvo_dialog import DenuvoTicketDialog
+            from gui.ticket_wizard import TicketWizardDialog
 
             name = ""
             for card in self._card_list:
@@ -691,7 +695,7 @@ class LibraryPage(ScrollArea):
                     name = getattr(card, "game_name", "") or ""
                     break
 
-            dialog = DenuvoTicketDialog(
+            dialog = TicketWizardDialog(
                 self._game_manager,
                 app_id,
                 game_name=name,

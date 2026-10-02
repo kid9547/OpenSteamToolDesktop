@@ -1,6 +1,7 @@
 """``gui.manifest_page`` 无头测试。
 
 覆盖清单扫描统计、损坏识别、孤儿判定、双目录同步、清理与手动导入。
+``qapp`` fixture 由 ``tests/conftest.py`` 提供（会话级，避免 QConfig 单例被回收）。
 """
 from __future__ import annotations
 
@@ -12,16 +13,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PyQt6.QtWidgets")
 
-from PyQt6.QtWidgets import QApplication  # noqa: E402
-
 from core.manifest_downloader import STEAM_MANIFEST_MAGIC  # noqa: E402
 from gui.manifest_page import ManifestPage, _human_size  # noqa: E402
-
-
-@pytest.fixture(scope="module")
-def qapp():
-    app = QApplication.instance() or QApplication([])
-    yield app
 
 
 class _FakeBridge:

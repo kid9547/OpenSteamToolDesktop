@@ -1,6 +1,6 @@
 """``gui.denuvo_dialog`` 无头构造测试。
 
-只在 Qt 可用的环境下运行（CI/本地无显示时使用 offscreen 平台）。
+``qapp`` fixture 由 ``tests/conftest.py`` 提供（会话级，避免 QConfig 单例被回收）。
 """
 from __future__ import annotations
 
@@ -12,16 +12,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PyQt6.QtWidgets")
 
-from PyQt6.QtWidgets import QApplication  # noqa: E402
-
 from core.credential_store import TicketBundle  # noqa: E402
 from core.game_manager import LuaGameManager  # noqa: E402
-
-
-@pytest.fixture(scope="module")
-def qapp():
-    app = QApplication.instance() or QApplication([])
-    yield app
 
 
 @pytest.fixture()
