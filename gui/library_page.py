@@ -140,10 +140,13 @@ class LibraryPage(ScrollArea):
         action_open_depot.triggered.connect(self._open_depotcache_dir)
         action_open_lua = Action(FluentIcon.CODE, "打开 Lua 配置目录", self)
         action_open_lua.triggered.connect(self._open_lua_dir)
+        action_check_manifest_cache = Action(FluentIcon.SEARCH, "检查清单缓存健康状态", self)
+        action_check_manifest_cache.triggered.connect(self._on_check_manifest_cache)
         action_clean_all = Action(FluentIcon.BROOM, "清理 Steam 异常下载残留缓存", self)
         action_clean_all.triggered.connect(self._on_clean_all_download_cache)
         import_menu.addAction(action_open_depot)
         import_menu.addAction(action_open_lua)
+        import_menu.addAction(action_check_manifest_cache)
         import_menu.addAction(action_clean_all)
         self.import_btn.setMenu(import_menu)
         header.addWidget(self.import_btn)
@@ -484,6 +487,7 @@ class LibraryPage(ScrollArea):
                 card.import_manifest_requested.connect(self._on_card_import_manifest)
                 card.clean_cache_requested.connect(self._on_card_clean_cache)
                 card.download_manifest_requested.connect(self._on_download_game_manifests)
+                card.denuvo_ticket_requested.connect(self._on_denuvo_ticket)
                 card.take_over_requested.connect(self._on_card_take_over)
                 self._list_layout.addWidget(card)
                 self._card_list.append(card)
@@ -672,6 +676,35 @@ class LibraryPage(ScrollArea):
 
     def _on_game_saved(self):
         """编辑保存后刷新列表"""
+        self._load_games_async()
+
+    # ---- D 加密（Denuvo）票据授权 ----
+
+    def _on_denuvo_ticket(self, app_id: str):
+        """打开 D 加密票据授权对话框（延迟到事件循环空闲，避免与右键菜单冲突）"""
+        def _do_open():
+            from gui.denuvo_dialog import DenuvoTicketDialog
+
+            name = ""
+            for card in self._card_list:
+                if getattr(card, "app_id", "") == app_id:
+                    name = getattr(card, "game_name", "") or ""
+                    break
+
+            dialog = DenuvoTicketDialog(
+                self._game_manager,
+                app_id,
+                game_name=name,
+                parent=self,
+                steam_bridge=getattr(self, "_steam_bridge", None),
+            )
+            dialog.applied.connect(self._on_denuvo_applied)
+            dialog.exec()
+
+        QTimer.singleShot(0, _do_open)
+
+    def _on_denuvo_applied(self, app_id: str):
+        """票据写入后刷新卡片状态"""
         self._load_games_async()
 
     # ---- 过滤 / 排序 ----
@@ -944,6 +977,27 @@ class LibraryPage(ScrollArea):
             else:
                 InfoBar.error("清理失败", msg, parent=self, position=InfoBarPosition.TOP)
 
+    def _on_check_manifest_cache(self):
+        """扫描双 depotcache，报告损坏文件和未被 Lua 引用的孤儿清单。"""
+        steam_path = self._get_active_steam_path()
+        if not steam_path or not os.path.isdir(steam_path):
+            InfoBar.error("检查失败", "未检测到有效的 Steam 安装目录", parent=self, position=InfoBarPosition.TOP)
+            return
+        from core.manifest_cache import ManifestCacheManager
+
+        manager = ManifestCacheManager(steam_path)
+        records = manager.scan()
+        invalid_count = sum(1 for record in records if not record.valid)
+        orphan_count = len(manager.orphaned())
+        InfoBar.info(
+            "清单缓存检查完成",
+            f"共发现 {len(records)} 组清单，{invalid_count} 组损坏或不完整，{orphan_count} 组未被 Lua 引用。"
+            " 未引用文件不会被自动删除。",
+            parent=self,
+            position=InfoBarPosition.TOP,
+            duration=7000,
+        )
+
     def _on_card_import_manifest(self, app_id: str):
         """从卡片直接打开文件选择器导入清单或配置文件"""
         files, _ = QFileDialog.getOpenFileNames(
@@ -996,10 +1050,9 @@ class LibraryPage(ScrollArea):
         def _worker_fn():
             from core.manifest_resolver import ManifestResolver
             resolver = ManifestResolver(steam_path)
-            ok, msg, count = resolver.resolve_manifests(app_id)
-            diag = resolver.diagnose_app(app_id)
+            report = resolver.complete_app(app_id)
             resolver.close()
-            return ok, msg, count, diag
+            return report
 
         worker = AsyncWorker(_worker_fn)
         worker.finished_with_result.connect(
@@ -1013,15 +1066,26 @@ class LibraryPage(ScrollArea):
         worker.start()
         self._name_workers.append(worker)
 
-    def _on_game_manifest_download_finished(self, app_id: str, result: tuple):
-        """单个游戏清单下载完成回调"""
+    def _on_game_manifest_download_finished(self, app_id: str, result):
+        """单个游戏清单下载完成回调（result 为 CompletionReport）"""
         if not self._alive:
             return
-        ok, msg, count, diag = result
-        if diag.is_ready:
+        if result is None:
+            InfoBar.error("下载失败", f"AppID {app_id} 清单补全未能返回结果", parent=self, position=InfoBarPosition.TOP)
+            return
+
+        ready = bool(getattr(result, "is_complete", False))
+        count = int(getattr(result, "downloaded", 0) or 0)
+        failed_results = list(getattr(result, "missing_results", [])) + list(
+            getattr(result, "failed_results", [])
+        )
+        missing = [r.key for r in failed_results]
+        summary = result.summary() if hasattr(result, "summary") else ""
+
+        if ready:
             InfoBar.success(
                 "清单补全成功",
-                f"AppID {app_id} 清单文件已全部就绪（本次下载 {count} 个）！Steam 可直接下载安装游戏。",
+                f"AppID {app_id} {summary}！Steam 可直接下载安装游戏。",
                 parent=self,
                 position=InfoBarPosition.TOP,
                 duration=5000,
@@ -1036,21 +1100,23 @@ class LibraryPage(ScrollArea):
                     g.missing_manifests = []
                     break
         else:
+            reasons = "；".join(f"{r.key}: {r.message}" for r in failed_results[:3])
             InfoBar.warning(
                 "部分清单补全",
-                f"AppID {app_id} 本次下载了 {count} 个清单，尚缺少: {', '.join(diag.missing_manifests[:3])}",
+                f"AppID {app_id} 本次补齐 {count} 个清单，仍缺: {', '.join(missing[:3])}"
+                + (f"\n原因：{reasons}" if reasons else ""),
                 parent=self,
                 position=InfoBarPosition.TOP,
-                duration=6000,
+                duration=8000,
             )
             for card in self._card_list:
                 if card.app_id == app_id:
-                    card.set_manifest_status(False, diag.missing_manifests)
+                    card.set_manifest_status(False, missing)
                     break
             for g in self._games_data:
                 if g.app_id == app_id:
                     g.manifest_ready = False
-                    g.missing_manifests = diag.missing_manifests
+                    g.missing_manifests = missing
                     break
 
     def _on_batch_download_missing_manifests(self):
@@ -1070,7 +1136,7 @@ class LibraryPage(ScrollArea):
 
         InfoBar.info(
             "正在批量补全",
-            f"检测到 {len(games_to_fix)} 款游戏缺少清单，已启动后台并发多源下载...",
+            f"检测到 {len(games_to_fix)} 款游戏缺少清单，已启动后台归档优先补全...",
             parent=self,
             position=InfoBarPosition.TOP,
             duration=4000,
@@ -1079,15 +1145,9 @@ class LibraryPage(ScrollArea):
         def _batch_worker():
             from core.manifest_resolver import ManifestResolver
             resolver = ManifestResolver(steam_path)
-            total_downloaded = 0
-            results = {}
-            for g in games_to_fix:
-                ok, msg, cnt = resolver.resolve_manifests(g.app_id)
-                diag = resolver.diagnose_app(g.app_id)
-                total_downloaded += cnt
-                results[g.app_id] = diag
+            batch = resolver.complete_apps([g.app_id for g in games_to_fix])
             resolver.close()
-            return total_downloaded, results
+            return batch
 
         worker = AsyncWorker(_batch_worker)
         worker.finished_with_result.connect(
@@ -1105,24 +1165,47 @@ class LibraryPage(ScrollArea):
         """批量清单补全完成回调"""
         if not self._alive:
             return
-        total_downloaded, diag_map = result
-        fixed_count = 0
-        for app_id, diag in diag_map.items():
-            if diag.is_ready:
-                fixed_count += 1
+    def _on_batch_manifest_download_finished(self, result):
+        """批量清单补全完成回调（result 为 BatchCompletionReport）"""
+        if not self._alive:
+            return
+        reports = list(getattr(result, "reports", []) or [])
+        total_downloaded = sum(int(getattr(r, "downloaded", 0) or 0) for r in reports)
+
+        for report in reports:
+            app_id = str(getattr(report, "app_id", ""))
+            ready = bool(getattr(report, "is_complete", False))
+            missing = [r.key for r in getattr(report, "missing_results", [])]
+            missing += [r.key for r in getattr(report, "failed_results", [])]
             for card in self._card_list:
                 if card.app_id == app_id:
-                    card.set_manifest_status(diag.is_ready, diag.missing_manifests)
+                    card.set_manifest_status(ready, missing)
                     break
             for g in self._games_data:
                 if g.app_id == app_id:
-                    g.manifest_ready = diag.is_ready
-                    g.missing_manifests = diag.missing_manifests
+                    g.manifest_ready = ready
+                    g.missing_manifests = missing
                     break
+
+        fixed_count = sum(1 for r in reports if getattr(r, "is_complete", False))
+        still_failed = [
+            f"{r.app_id}（{', '.join(x.key for x in (list(getattr(r, 'missing_results', [])) + list(getattr(r, 'failed_results', [])))[:2])}）"
+            for r in reports if not getattr(r, "is_complete", False)
+        ]
+        if still_failed:
+            InfoBar.warning(
+                "批量补全完成（部分未就绪）",
+                f"已为 {fixed_count}/{len(reports)} 款游戏补齐清单（共下载 {total_downloaded} 个清单文件）。\n"
+                f"仍不完整：{'；'.join(still_failed[:4])}",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=9000,
+            )
+            return
 
         InfoBar.success(
             "批量补全完成",
-            f"已为 {fixed_count}/{len(diag_map)} 款游戏成功就绪清单（共下载 {total_downloaded} 个清单文件）！",
+            f"已为 {fixed_count}/{len(reports)} 款游戏成功就绪清单（共下载 {total_downloaded} 个清单文件）！",
             parent=self,
             position=InfoBarPosition.TOP,
             duration=6000,

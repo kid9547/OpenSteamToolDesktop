@@ -70,23 +70,69 @@ TOKEN_API: str = "https://api.993499094.xyz/appaccesstokens.json"
 DEPOT_KEYS_API_ALT: str = "https://api.993499094.xyz/depotkeys.json"
 
 # ============ Manifest 清单仓库与镜像源 ============
-MANIFEST_GITHUB_REPOS: list[str] = [
-    "P-ToyStore/SteamManifestCache_Pro",
+# 说明（2026-10 实测）：
+#   * ManifestAutoUpdate 生态采用「一个 AppID 一个 git 分支」的归档布局，
+#     分支内同时包含 config.json / Key.vdf / appinfo.vdf 与真实的
+#     {depot}_{gid}.manifest，因此归档内 GID 与清单文件 100% 自洽。
+#   * P-ToyStore/SteamManifestCache_Pro 已不存在（GitHub API 返回 404），
+#     不要再把它当作清单来源。
+MANIFEST_ARCHIVE_REPOS: list[str] = [
     "Auiowu/ManifestAutoUpdate",
     "tymolu233/ManifestAutoUpdate",
     "sean-who/ManifestAutoUpdate",
 ]
 
-# GitHub Raw 加速镜像（国内或无代理网络环境回退）
+# 兼容旧代码的别名（仅保留仍然有效的仓库）
+MANIFEST_GITHUB_REPOS: list[str] = list(MANIFEST_ARCHIVE_REPOS)
+
+# GitHub Raw 加速镜像（国内或无代理网络环境回退）——按实测可用性排序
 GITHUB_RAW_MIRRORS: list[str] = [
     "https://raw.githubusercontent.com",
     "https://ghfast.top/https://raw.githubusercontent.com",
     "https://ghproxy.net/https://raw.githubusercontent.com",
+    "https://cdn.jsdelivr.net/gh",
 ]
 
-# ManifestHub API（SteamAutoCracks 生态）
+# 分支归档整包下载镜像前缀（{url} 为 https://github.com/<repo>/archive/refs/heads/<appid>.zip）
+GITHUB_ARCHIVE_MIRRORS: list[str] = [
+    "",
+    "https://ghfast.top/",
+    "https://ghproxy.net/",
+]
+
+# 单文件分支归档超时（秒）
+MANIFEST_ARCHIVE_TIMEOUT: float = 30.0
+
+# Manifest Request Code（内容码）查询接口，{gid} 为清单 GID
+MANIFEST_REQUEST_CODE_APIS: list[str] = [
+    "http://gmrc.wudrm.com/manifest/{gid}",
+    "https://manifest.steam.run/api/manifest/{gid}",
+]
+
+# ManifestHub API（SteamAutoCracks 生态）——需要 API Key，无 Key 时返回 403
 MANIFESTHUB_API_URL: str = "https://api.manifesthub2.filegear-sg.me/manifest"
 MANIFESTHUB_API_KEY: str = ""
+
+# ============ D 加密（Denuvo）票据 ============
+# 在线「现签」票据服务地址（可选，默认关闭 = 绝不联网）。
+#
+# 契约与开源分支 BetterSteamTools 的 EticketClient 完全一致：
+#   POST <url>  Content-Type: application/json
+#   {"app_id":"<id>","nonce":"<hex>","existing_steam_id":"<decimal>"}
+#   200 → {"eticket":"<hex>","appticket":"<hex>","steam_id":"<decimal>"}
+#   409 → {"foreign_account":true} 或「该 appid 无账号池归属」
+#
+# 留空时本项目不发起任何网络请求，行为与官方 stock OpenSteamTool 一致。
+# 说明：AppTicket/ETicket 由 Valve 私钥签名，本地无法离线伪造；在线现签依赖
+# 服务端持有的正版账号池，属运营资源而非可移植代码。
+# 详见 DENUVO_REVERSE_ENGINEERING_REPORT.md
+TICKET_MINT_URL: str = os.getenv("OST_TICKET_MINT_URL", "")
+
+# 票据有效期提示（分钟）。Valve 会话票据通常 30 分钟 ~ 数小时，过期报 88500005。
+TICKET_VALIDITY_HINT_MINUTES: int = 30
+
+# 本机票据提取工具路径（相对项目根目录）
+TICKET_EXTRACTOR_RELATIVE: str = "tools/extract_tickets/extract_tickets.exe"
 
 # ============ 主题 ============
 DEFAULT_THEME_MODE: str = "dark"

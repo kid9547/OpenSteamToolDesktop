@@ -21,6 +21,48 @@ from utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
+def _build_ticket_lines(metadata: "GameMetadata") -> list[str]:
+    """构建 D 加密票据的 Lua 指令行。
+
+    OpenSteamTool.dll 注册了 ``setappticket`` / ``seteticket`` 两个 Lua 函数
+    （源码 ``src/Utils/Config/LuaConfig.cpp``），它们会把十六进制票据解码后写入
+    Windows 凭据存储 ``HKCU\\Software\\Valve\\Steam\\Apps\\<AppID>``：
+
+    * ``AppTicket`` —— 应用所有权票据（AppOwnershipTicket）
+    * ``ETicket``   —— 加密应用票据（EncryptedAppTicket）
+
+    .. important::
+
+        只有已在同一 Lua 中 ``addappid`` 的 AppID 才会被应用票据
+        （源码 ``AppTicket.cpp`` 中的 ``LuaConfig::HasDepot`` 判断），因此本函数的
+        输出必须排在 ``addappid`` 之后。
+
+    .. note::
+
+        票据是 Valve 签名的真实凭据，有效期约 30 分钟~数小时，本地无法伪造。
+        过期后需重新导入，否则 Denuvo 校验会报错误码 ``88500005``。
+    """
+    lines: list[str] = []
+    app_id = str(metadata.app_id)
+
+    def _clean(value: str) -> str:
+        return re.sub(r"[\s:_-]", "", value or "").lower()
+
+    app_ticket = _clean(metadata.app_ticket)
+    eticket = _clean(metadata.eticket)
+    if not app_ticket and not eticket:
+        return lines
+
+    lines.append(f"-- D 加密票据（来源：凭据导入/本机提取，有效期有限）")
+    if app_ticket:
+        lines.append(f'setAppTicket({app_id}, "{app_ticket}")')
+        logger.debug(f"  D-encryption: setAppTicket({app_id}, {len(app_ticket) // 2} bytes)")
+    if eticket:
+        lines.append(f'setETicket({app_id}, "{eticket}")')
+        logger.debug(f"  D-encryption: setETicket({app_id}, {len(eticket) // 2} bytes)")
+    return lines
+
+
 # ── 数据类 ──────────────────────────────────────────────────
 
 
@@ -44,6 +86,10 @@ class GameMetadata:
     access_token: str = ""
     workshop_key: str = ""
     app_level_key: str = ""  # 应用级密钥（来自 Sudama，打在 addappid(app_id, 0, key) 主游戏行）
+    # D 加密（Denuvo）票据：写入 Lua 的 setAppTicket/setETicket，同时落注册表凭据存储
+    app_ticket: str = ""
+    eticket: str = ""
+    steam_id: str = ""
 
 
 @dataclass
@@ -572,35 +618,154 @@ class LuaGameManager:
                 metadata.access_token = token_value
                 logger.debug(f"  Parsed access_token for {app_id}")
 
-        # ── 4. 解析 setManifestid / setAppTicket（如有）──
-        # 当前 _build_lua_content 不使用这两个函数，但保留解析能力
+        # ── 4. 解析 setManifestid / setAppTicket / setETicket ──
+        # 兼容三种写法（_build_lua_content 实际会输出带 size 的形式）：
+        #   setManifestid(depot, "gid") / setManifestid(depot, gid)
+        #   setManifestid(depot, "gid", 123456)
         manifest_pattern = re.compile(
-            r'setManifestid\(\s*(\d+)\s*,\s*(\d+)\s*\)',
+            r'setManifestid\(\s*(\d+)\s*,\s*["\']?(\d+)["\']?\s*(?:,\s*(\d+)\s*)?\)',
             re.IGNORECASE,
         )
         for m in manifest_pattern.finditer(content):
             depot_id = m.group(1)
             manifest_gid = m.group(2)
+            size = int(m.group(3)) if m.group(3) else 0
             # 尝试匹配已有 depot
             found = False
             for d in metadata.depots:
                 if d.depot_id == depot_id:
                     d.manifest_gid = manifest_gid
+                    if size:
+                        d.size = size
                     found = True
                     break
             if not found:
                 metadata.depots.append(
-                    DepotInfo(depot_id=depot_id, manifest_gid=manifest_gid)
+                    DepotInfo(depot_id=depot_id, manifest_gid=manifest_gid, size=size)
                 )
+
+        # ── 4b. 解析 D 加密票据（setAppTicket / setETicket）──
+        # 这两个值由 OpenSteamTool.dll 写入注册表凭据存储
+        # HKCU\Software\Valve\Steam\Apps\<appid>，是 Denuvo 游戏授权的关键数据。
+        ticket_pattern = re.compile(
+            r'set(app|e)ticket\(\s*(\d+)\s*,\s*["\']([0-9a-fA-F]+)["\']\s*\)',
+            re.IGNORECASE,
+        )
+        for m in ticket_pattern.finditer(content):
+            kind = m.group(1).lower()
+            ticket_app_id = m.group(2)
+            value = m.group(3)
+            # 只收集主 AppID 自己的票据；depot 级票据不在本项目处理范围内
+            if ticket_app_id != app_id:
+                continue
+            if kind == "app":
+                metadata.app_ticket = value
+            else:
+                metadata.eticket = value
 
         logger.info(
             f"Parsed metadata for {app_id}: "
             f"name={metadata.name or '(none)'}, "
             f"depots={len(metadata.depots)}, "
             f"token={'yes' if metadata.access_token else 'no'}, "
-            f"app_key={'yes' if metadata.app_level_key else 'no'}"
+            f"app_key={'yes' if metadata.app_level_key else 'no'}, "
+            f"appticket={'yes' if metadata.app_ticket else 'no'}, "
+            f"eticket={'yes' if metadata.eticket else 'no'}"
         )
         return metadata
+
+    # ── D 加密票据写入 Lua ────────────────────────────────────
+    _TICKET_LINE_RE = re.compile(
+        r"^\s*set(?:app|e)ticket\s*\([^)]*\)\s*$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    def apply_ticket_bundle(self, app_id: str, bundle) -> str:
+        """把 D 加密票据写入（或更新到）该游戏的 Lua 配置文件。
+
+        流程：读取现有 Lua → 去掉旧的 ``setAppTicket``/``setETicket`` 行 →
+        在文件末尾追加新票据行。``addappid`` 行保持不变，因此票据一定排在
+        ``addappid`` 之后，符合 OpenSteamTool 的 ``LuaConfig::HasDepot`` 前提。
+
+        Args:
+            app_id: 目标 AppID。
+            bundle: :class:`core.credential_store.TicketBundle`（或任何带
+                ``app_ticket`` / ``eticket`` 属性的对象）。
+
+        Returns:
+            更新后的 Lua 文件绝对路径。
+
+        Raises:
+            ValueError: 未配置 Lua 目录、Lua 文件不存在或票据为空。
+        """
+        app_id = str(app_id)
+        if not self._lua_dir:
+            raise ValueError("未配置 Lua 目录，无法写入票据")
+        filepath = os.path.join(self._lua_dir, f"{app_id}.lua")
+        if not os.path.isfile(filepath):
+            raise ValueError(f"Lua 文件不存在: {filepath}")
+
+        app_ticket = re.sub(r"[\s:_-]", "", getattr(bundle, "app_ticket", "") or "").lower()
+        eticket = re.sub(r"[\s:_-]", "", getattr(bundle, "eticket", "") or "").lower()
+
+        with open(filepath, "r", encoding="utf-8", errors="replace") as stream:
+            content = stream.read()
+
+        kept = [line for line in content.splitlines() if not self._TICKET_LINE_RE.match(line)]
+        while kept and not kept[-1].strip():
+            kept.pop()
+
+        # 空票据 = 清除模式（供"清除此游戏票据"使用）
+        if not app_ticket and not eticket:
+            if not kept:
+                logger.warning("清除票据后 Lua 内容为空，已放弃写入 appid=%s", app_id)
+                return filepath
+            with open(filepath, "w", encoding="utf-8") as stream:
+                stream.write("\n".join(kept) + "\n")
+            logger.info("已从 Lua 清除票据 appid=%s", app_id)
+            return filepath
+
+        if app_ticket:
+            kept.append(f'setAppTicket({app_id}, "{app_ticket}")')
+        if eticket:
+            kept.append(f'setETicket({app_id}, "{eticket}")')
+
+        with open(filepath, "w", encoding="utf-8") as stream:
+            stream.write("\n".join(kept) + "\n")
+
+        logger.info(
+            "已更新 Lua 票据 appid=%s appticket=%s eticket=%s",
+            app_id,
+            f"{len(app_ticket) // 2}B" if app_ticket else "-",
+            f"{len(eticket) // 2}B" if eticket else "-",
+        )
+        return filepath
+
+    def ticket_status_from_lua(self, app_id: str) -> dict[str, bool]:
+        """仅从 Lua 文本判断票据是否存在（不访问注册表，便于界面快速展示）。"""
+        app_id = str(app_id)
+        if not self._lua_dir:
+            return {"has_app_ticket": False, "has_eticket": False}
+        filepath = os.path.join(self._lua_dir, f"{app_id}.lua")
+        if not os.path.isfile(filepath):
+            return {"has_app_ticket": False, "has_eticket": False}
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as stream:
+                content = stream.read()
+        except OSError:
+            return {"has_app_ticket": False, "has_eticket": False}
+        pattern = re.compile(
+            r"set(app|e)ticket\(\s*(\d+)\s*,", re.IGNORECASE
+        )
+        has_app = has_e = False
+        for kind, ticket_app_id in pattern.findall(content):
+            if ticket_app_id != app_id:
+                continue
+            if kind.lower() == "app":
+                has_app = True
+            else:
+                has_e = True
+        return {"has_app_ticket": has_app, "has_eticket": has_e}
 
     def remove_game(
         self,
@@ -905,6 +1070,13 @@ class LuaGameManager:
                 dlc_manifest_count += 1
         if dlc_manifest_count:
             logger.debug(f"  Bound {dlc_manifest_count} DLC depot manifest(s)")
+
+        # ── D 加密票据（setAppTicket / setETicket）──
+        # 必须放在 addappid 之后：OpenSteamTool 只对已 addappid 的 appid 应用票据
+        ticket_lines = _build_ticket_lines(metadata)
+        if ticket_lines:
+            lines.extend(ticket_lines)
+            logger.debug(f"  Added {len(ticket_lines)} D-encryption ticket line(s)")
 
         lines.append("")
         logger.debug(f"Lua content built: {len(lines)} lines")

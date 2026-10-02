@@ -65,6 +65,7 @@ class MainWindow(MSFluentWindow):
         from gui.inject_page import InjectPage
         from gui.search_page import SearchPage
         from gui.library_page import LibraryPage
+        from gui.manifest_page import ManifestPage
         from gui.settings_page import SettingsPage
         from config import ENABLE_ACCELERATOR_PAGE
 
@@ -85,6 +86,10 @@ class MainWindow(MSFluentWindow):
         self.search_page = SearchPage(game_manager, bridge=bridge, parent=self)
 
         self.library_page = LibraryPage(game_manager, bridge=bridge, parent=self)
+
+        self.manifest_page = ManifestPage(game_manager, bridge=bridge, parent=self)
+        # 清单变动后刷新游戏库的清单就绪状态
+        self.manifest_page.manifests_changed.connect(self.library_page._load_games_async)
 
         self.settings_page = SettingsPage(
             config_manager,
@@ -117,6 +122,7 @@ class MainWindow(MSFluentWindow):
         self._inject_nav_btn = self.addSubInterface(self.inject_page, FluentIcon.DOWNLOAD, "注入管理")
         self._search_nav_btn = self.addSubInterface(self.search_page, FluentIcon.SEARCH, "搜索入库")
         self._library_nav_btn = self.addSubInterface(self.library_page, FluentIcon.LIBRARY, "游戏库")
+        self._manifest_nav_btn = self.addSubInterface(self.manifest_page, FluentIcon.ZIP_FOLDER, "清单管理")
         if self.accelerate_page:
             self._accelerate_nav_btn = self.addSubInterface(self.accelerate_page, FluentIcon.SPEED_HIGH, "科学加速")
         else:

@@ -2,6 +2,7 @@
 测试 core.manifest_downloader — Depot Manifest 下载与多源解析
 """
 import io
+import json
 import os
 import tempfile
 import zipfile
@@ -229,4 +230,160 @@ class TestManifestHubDynamicSync:
         with patch("httpx.Client.get", side_effect=Exception("Connection refused")):
             info = fetch_manifesthub_upstream_info(timeout=0.1)
             assert info["api_url"] == MANIFESTHUB_API_URL
+
+
+def _cdn_zip_payload(raw_manifest: bytes) -> bytes:
+    """构造 Valve CDN 返回的 ZIP（内含名为 'z' 的条目）。"""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("z", raw_manifest)
+    return buf.getvalue()
+
+
+class _UrlRecordingClient:
+    """记录请求 URL 并按键值返回响应的假 httpx 客户端。"""
+
+    def __init__(self, responder):
+        self._responder = responder
+        self.calls: list[str] = []
+
+    def get(self, url: str, timeout: float | None = None):  # noqa: ARG002
+        self.calls.append(url)
+        status, body = self._responder(url)
+        resp = Mock()
+        resp.status_code = status
+        resp.content = body
+        resp.text = body.decode("utf-8", "replace")
+        resp.json = lambda: json.loads(resp.text)
+        return resp
+
+    def close(self):
+        pass
+
+
+class TestBranchArchiveSingleFileSource:
+    """测试社区分支归档单文件来源与镜像回退顺序（离线）"""
+
+    def test_branch_paths_and_mirror_fallback_order(self, temp_steam_dir):
+        downloader = ManifestDownloader(temp_steam_dir)
+        manifest = STEAM_MANIFEST_MAGIC + b"branch-archive-payload"
+
+        proxied = _UrlRecordingClient(
+            lambda url: (404, b"Not Found") if "raw.githubusercontent.com" in url else (404, b"Not Found")
+        )
+        mirror = _UrlRecordingClient(
+            lambda url: (200, manifest) if "ghproxy.net" in url else (404, b"Not Found")
+        )
+        downloader._http = proxied
+        downloader._direct_http = mirror
+
+        data = downloader._download_from_github_repos("731", "7127896784363312296", app_id="730")
+
+        assert data == manifest
+        # 路径必须是分支布局 <repo>/<appid>/{depot}_{gid}.manifest
+        assert any(
+            "/Auiowu/ManifestAutoUpdate/730/731_7127896784363312296.manifest" in url
+            for url in proxied.calls + mirror.calls
+        )
+        # 镜像按 ghfast → ghproxy 顺序回退
+        fast_idx = next(i for i, u in enumerate(mirror.calls) if "ghfast.top" in u)
+        proxy_idx = next(i for i, u in enumerate(mirror.calls) if "ghproxy.net" in u)
+        assert fast_idx < proxy_idx
+        # 不再请求已失效的 P-ToyStore 仓库
+        assert not any("SteamManifestCache_Pro" in u for u in proxied.calls + mirror.calls)
+        downloader.close()
+
+    def test_owner_and_main_branch_candidates(self, temp_steam_dir):
+        downloader = ManifestDownloader(temp_steam_dir)
+        manifest = STEAM_MANIFEST_MAGIC + b"dlc-branch-payload"
+        proxied = _UrlRecordingClient(lambda url: (200, manifest))
+        downloader._http = proxied
+        downloader._direct_http = _UrlRecordingClient(lambda url: (404, b"Not Found"))
+
+        data = downloader._download_from_github_repos("9001", "42", app_id="100", owner_app_id="200")
+
+        assert data == manifest
+        # DLC 拥有者分支优先于主 AppID 分支
+        assert "/200/9001_42.manifest" in proxied.calls[0]
+        downloader.close()
+
+
+class TestRequestCodeCdnSource:
+    """测试 Manifest Request Code → Valve CDN 路径（离线）"""
+
+    def test_fetch_request_code_plain_text(self, temp_steam_dir):
+        downloader = ManifestDownloader(temp_steam_dir)
+        downloader._direct_http = _UrlRecordingClient(lambda url: (200, b"12005229650648827506"))
+        assert downloader.fetch_request_code("7138855853134977810") == "12005229650648827506"
+        # 命中缓存，不重复请求
+        calls = len(downloader._direct_http.calls)
+        assert downloader.fetch_request_code("7138855853134977810") == "12005229650648827506"
+        assert len(downloader._direct_http.calls) == calls
+        downloader.close()
+
+    def test_fetch_request_code_json_form(self, temp_steam_dir):
+        downloader = ManifestDownloader(temp_steam_dir)
+        responses = {"gmrc": (500, b"oops"), "steam.run": (200, b'{"content":"18049399937474343719"}')}
+
+        def responder(url):
+            for key, value in responses.items():
+                if key in url:
+                    return value
+            return (404, b"Not Found")
+
+        downloader._direct_http = _UrlRecordingClient(responder)
+        downloader._http = downloader._direct_http
+        assert downloader.fetch_request_code("999") == "18049399937474343719"
+        downloader.close()
+
+    def test_fetch_request_code_all_sources_fail(self, temp_steam_dir):
+        downloader = ManifestDownloader(temp_steam_dir)
+        downloader._direct_http = _UrlRecordingClient(lambda url: (404, b"Not Found"))
+        downloader._http = downloader._direct_http
+        assert downloader.fetch_request_code("999") is None
+        assert downloader.fetch_request_code("") is None
+        downloader.close()
+
+    def test_download_via_request_code_extracts_manifest(self, temp_steam_dir):
+        downloader = ManifestDownloader(temp_steam_dir)
+        raw_manifest = STEAM_MANIFEST_MAGIC + b"official-cdn-manifest" * 3
+        cdn_zip = _cdn_zip_payload(raw_manifest)
+
+        def responder(url):
+            if "gmrc.wudrm.com" in url:
+                return (200, b"12005229650648827506")
+            if "/depot/2347770/manifest/7138855853134977810/5/12005229650648827506" in url:
+                return (200, cdn_zip)
+            return (404, b"Not Found")
+
+        downloader._direct_http = _UrlRecordingClient(responder)
+        downloader._http = downloader._direct_http
+
+        data = downloader.download_via_request_code(
+            "2347770", "7138855853134977810", cdn_hosts=["steampipe.akamaized.net"]
+        )
+
+        assert data == raw_manifest
+        assert data[:4] == STEAM_MANIFEST_MAGIC
+        downloader.close()
+
+    def test_download_single_falls_back_to_request_code(self, temp_steam_dir):
+        downloader = ManifestDownloader(temp_steam_dir)
+        raw_manifest = STEAM_MANIFEST_MAGIC + b"fallback-manifest" * 3
+
+        with patch.object(downloader, "_download_from_github_repos", return_value=None), \
+             patch.object(downloader, "_download_from_manifesthub", return_value=None), \
+             patch.object(
+                 downloader,
+                 "download_via_request_code",
+                 return_value=raw_manifest,
+             ) as code_mock:
+            res = downloader._download_single("2347770", "7138855853134977810", 0, [], app_id="730")
+
+        assert code_mock.called
+        assert res.success is True
+        assert "request code" in res.message
+        assert (Path(temp_steam_dir) / "depotcache" / "2347770_7138855853134977810.manifest").read_bytes() == raw_manifest
+        assert (Path(temp_steam_dir) / "config" / "depotcache" / "2347770_7138855853134977810.manifest").exists()
+        downloader.close()
 

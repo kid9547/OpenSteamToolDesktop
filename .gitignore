@@ -30,3 +30,17 @@ Thumbs.db
 OpenSteamToolDesktop-*.zip
 OpenSteamToolDesktop-*/
 precompiled_release/
+
+# 逆向分析临时目录（上游源码快照、反汇编脚本、提取器输出）
+_re_analysis/
+
+# 本机票据提取工具的临时输出（<appid>/appticket.bin 等，含个人凭据，禁止入库）
+tools/extract_tickets/[0-9]*/
+
+# 参考学习程序（第三方商业软件二进制，体积大且不可再分发）
+参考学习程序/
+
+# 子代理工作副本
+.baseline_wt/
+_live_*.txt
+_final_pytest.txt

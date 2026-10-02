@@ -40,6 +40,7 @@ class GameCard(CardWidget):
     import_manifest_requested = pyqtSignal(str)  # 导入清单请求
     clean_cache_requested = pyqtSignal(str)  # 清理下载缓存请求
     download_manifest_requested = pyqtSignal(str)  # 自动下载/补全清单请求
+    denuvo_ticket_requested = pyqtSignal(str)  # D 加密（Denuvo）票据授权请求
     take_over_requested = pyqtSignal(str)  # 接管入库请求
 
     def __init__(
@@ -326,6 +327,15 @@ class GameCard(CardWidget):
         menu.addAction(Action(FluentIcon.FOLDER_ADD, "导入清单文件 (.manifest / .zip)", triggered=self._on_import_manifest))
         menu.addAction(Action(FluentIcon.SEARCH, "在线寻找此游戏清单", triggered=self._search_manifest_online))
         menu.addAction(Action(FluentIcon.FOLDER, "打开清单目录 (depotcache)", triggered=self._open_depotcache))
+        menu.addSeparator()
+        menu.addAction(
+            Action(
+                FluentIcon.CERTIFICATE,
+                "D 加密授权（导入/提取票据）",
+                triggered=self._on_denuvo_ticket,
+            )
+        )
+        menu.addSeparator()
         if self.install_dir and os.path.isdir(self.install_dir):
             menu.addAction(Action(FluentIcon.FOLDER, "打开游戏本地安装目录", triggered=self._open_install_dir))
         menu.addAction(Action(FluentIcon.BROOM, "清理此游戏下载残留缓存", triggered=self._on_clean_cache))
@@ -345,6 +355,10 @@ class GameCard(CardWidget):
 
     def _on_import_manifest(self):
         self.import_manifest_requested.emit(self.app_id)
+
+    def _on_denuvo_ticket(self):
+        """请求打开 D 加密票据授权对话框"""
+        self.denuvo_ticket_requested.emit(self.app_id)
 
     def _on_clean_cache(self):
         self.clean_cache_requested.emit(self.app_id)

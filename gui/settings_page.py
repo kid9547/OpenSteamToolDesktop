@@ -293,7 +293,7 @@ class SettingsPage(ScrollArea):
 
         # Tier 1
         t1_row = QHBoxLayout()
-        t1_title = BodyLabel("<b>[第 1 优先级] GitHub 社区源</b>（P-ToyStore 等 Tag 匹配，自动解包 Raw DEFLATE）", status_box)
+        t1_title = BodyLabel("<b>[第 1 优先级] AppID 分支归档</b>（ManifestAutoUpdate 整包：config.json + Key.vdf + 真实 {depot}_{gid}.manifest，自动解包 Raw DEFLATE）", status_box)
         t1_title.setTextFormat(Qt.TextFormat.RichText)
         self.t1_status_lbl = CaptionLabel("未测试", status_box)
         self.t1_status_lbl.setStyleSheet("color: #888888; font-weight: bold;")
@@ -323,7 +323,7 @@ class SettingsPage(ScrollArea):
 
         # Tier 4
         t4_row = QHBoxLayout()
-        t4_title = BodyLabel("<b>[第 4 优先级] Steam 官方 CDN</b>（针对免锁/公开 Depot 直接向 Steam 分发网络拉取）", status_box)
+        t4_title = BodyLabel("<b>[第 4 优先级] Valve 官方 CDN</b>（通过 Manifest Request Code 内容码直接拉取，最后回退免锁 Depot 直连）", status_box)
         t4_title.setTextFormat(Qt.TextFormat.RichText)
         self.t4_status_lbl = CaptionLabel("未测试", status_box)
         self.t4_status_lbl.setStyleSheet("color: #888888; font-weight: bold;")

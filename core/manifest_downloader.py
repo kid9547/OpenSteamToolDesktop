@@ -29,6 +29,7 @@ from utils.logger import setup_logger
 from config import (
     STEAM_CDN_API, SSL_VERIFY,
     MANIFEST_GITHUB_REPOS, GITHUB_RAW_MIRRORS,
+    MANIFEST_ARCHIVE_REPOS, MANIFEST_REQUEST_CODE_APIS,
     MANIFESTHUB_API_URL, MANIFESTHUB_API_KEY,
 )
 from utils.http_client import get_system_proxy
@@ -356,7 +357,14 @@ class ManifestDownloader:
         app_id: str = "",
         owner_app_id: str = "",
     ) -> ManifestDownloadResult:
-        """下载单个 Depot Manifest（支持多源级联回退）"""
+        """下载单个 Depot Manifest（支持多源级联回退）
+
+        源顺序（2026-10 实测）：
+        1. 社区 AppID 分支归档的单文件 raw 路径（含 ghfast / ghproxy / jsDelivr 镜像）
+        2. ManifestHub API（需要 API Key）
+        3. Manifest Request Code → Valve 官方 CDN（社区内容码接口实测可用）
+        4. Valve CDN 直连（仅未加锁 / 免令牌 depot）
+        """
         target_path = os.path.join(self._depotcache_dir, f"{depot_id}_{manifest_gid}.manifest")
 
         # 1. 如已存在则直接返回成功
@@ -370,7 +378,7 @@ class ManifestDownloader:
                 file_path=target_path,
             )
 
-        # 2. 尝试从社区 GitHub 仓库下载（按 Tag 或分支快速获取）
+        # 2. 社区分支归档单文件（精确 (depot, gid)，最轻量的可靠来源）
         gh_data = self._download_from_github_repos(depot_id, manifest_gid, app_id, owner_app_id)
         if gh_data:
             return self._save_manifest_payload(depot_id, manifest_gid, gh_data, "GitHub Manifest Cache")
@@ -380,7 +388,14 @@ class ManifestDownloader:
         if mhub_data:
             return self._save_manifest_payload(depot_id, manifest_gid, mhub_data, "ManifestHub API")
 
-        # 4. 尝试从 Steam 官方 CDN 获取（未加锁/免令牌 depot 适用）
+        # 4. 通过 Manifest Request Code 走 Valve 官方 CDN
+        code_data = self.download_via_request_code(depot_id, manifest_gid)
+        if code_data:
+            return self._save_manifest_payload(
+                depot_id, manifest_gid, code_data, "Valve CDN (request code)"
+            )
+
+        # 5. 尝试从 Steam 官方 CDN 获取（未加锁/免令牌 depot 适用）
         for host in cdn_hosts:
             url = self._build_manifest_url(host, depot_id, manifest_gid, size)
             try:
@@ -407,51 +422,132 @@ class ManifestDownloader:
         app_id: str = "",
         owner_app_id: str = "",
     ) -> bytes | None:
-        """从社区 GitHub 清单仓库拉取文件"""
+        """从社区 GitHub 分支归档按精确文件名拉取单个清单。
+
+        分支布局为 ``<repo>/<appid>/{depot}_{gid}.manifest``，这是社区清单
+        仓库真实可用的路径（旧实现的 ``P-ToyStore/SteamManifestCache_Pro``
+        Tag 路径实测已 404，仓库不存在，已移除）。
+        """
+        # 延迟导入避免与 core.manifest_archive 形成模块级循环依赖
+        from core.manifest_archive import build_branch_raw_urls
+
         fn = f"{depot_id}_{manifest_gid}.manifest"
 
-        # 组织候选文件相对路径
-        candidates: list[tuple[str, str]] = []
-
-        # 优先路径 1: P-ToyStore 的 Tag 路径（极度精准，无 AppID 归属混淆）
-        if manifest_gid:
-            candidates.append(
-                ("P-ToyStore/SteamManifestCache_Pro", f"refs/tags/{depot_id}_{manifest_gid}/{fn}")
-            )
-
-        # 路径 2: 拥有者 AppID 分支（DLC 专有分支）
+        # 候选 (仓库, 分支)：优先拥有者 AppID 分支（DLC 专有分支），再主 AppID 分支
+        repo_branches: list[tuple[str, str]] = []
         if owner_app_id:
-            for repo in MANIFEST_GITHUB_REPOS:
-                candidates.append((repo, f"{owner_app_id}/{fn}"))
+            for repo in MANIFEST_ARCHIVE_REPOS:
+                repo_branches.append((repo, str(owner_app_id)))
+        if app_id and str(app_id) != str(owner_app_id):
+            for repo in MANIFEST_ARCHIVE_REPOS:
+                repo_branches.append((repo, str(app_id)))
 
-        # 路径 3: 主游戏 AppID 分支
-        if app_id and app_id != owner_app_id:
-            for repo in MANIFEST_GITHUB_REPOS:
-                candidates.append((repo, f"{app_id}/{fn}"))
-
-        # 遍历候选仓库路径，依次尝试直连与镜像源
-        for repo, rel_path in candidates:
-            raw_url = f"https://raw.githubusercontent.com/{repo}/{rel_path}"
-
-            url_candidates = [
-                (raw_url, self._http),                                               # 优先走代理客户端
-                (f"https://ghfast.top/{raw_url}", self._direct_http),                # 高速镜像 1
-                (f"https://ghproxy.net/{raw_url}", self._direct_http),               # 高速镜像 2
-                (f"https://raw.dgithub.xyz/{repo}/{rel_path}", self._direct_http),   # 高速镜像 3
-            ]
-
-            for url, client in url_candidates:
+        for repo, branch in repo_branches:
+            for label, url in build_branch_raw_urls(repo, branch, fn):
+                # 官方 raw 走系统代理客户端，公共加速镜像直连（实测二者皆可用）
+                client = self._http if label == "GitHub Raw" else self._direct_http
                 try:
                     resp = client.get(url, timeout=12.0)
-                    if resp.status_code == 200 and len(resp.content) >= 16:
-                        payload = self._extract_manifest_payload(resp.content)
-                        if payload and len(payload) >= 16:
-                            logger.info(f"Successfully fetched {fn} from {url.split('/')[2]}")
-                            return payload
                 except Exception:
                     continue
+                if resp.status_code != 200 or len(resp.content) < 16:
+                    continue
+                payload = self._extract_manifest_payload(resp.content)
+                if payload and payload[:4] == STEAM_MANIFEST_MAGIC and len(payload) >= 16:
+                    logger.info(f"Successfully fetched {fn} from {label}")
+                    return payload
 
         return None
+
+    def fetch_request_code(self, manifest_gid: str) -> str | None:
+        """查询清单内容码（Manifest Request Code）。
+
+        实测可用的社区接口（2026-10）：
+        * ``http://gmrc.wudrm.com/manifest/{gid}`` → 纯文本内容码
+        * ``https://manifest.steam.run/api/manifest/{gid}`` → ``{"content": "..."}``
+
+        内容码与 GID 绑定（同一 GID 对任意 Depot 返回同一个码），因此可以
+        在多个 Depot 之间复用；缓存于实例内避免重复请求。
+        """
+        if not manifest_gid:
+            return None
+
+        cache = getattr(self, "_request_code_cache", None)
+        if cache is None:
+            cache = {}
+            self._request_code_cache = cache
+        if manifest_gid in cache:
+            return cache[manifest_gid]
+
+        code: str | None = None
+        for template in MANIFEST_REQUEST_CODE_APIS:
+            url = template.format(gid=manifest_gid, depot="", appid="")
+            client = self._direct_http if "gmrc.wudrm.com" in url else self._http
+            try:
+                resp = client.get(url, timeout=12.0)
+            except Exception as exc:
+                logger.debug("内容码接口异常 %s: %s", url, exc)
+                continue
+            if resp.status_code != 200:
+                continue
+            text = resp.text.strip()
+            if not text:
+                continue
+            if text.startswith("{"):
+                try:
+                    code = str(resp.json().get("content") or "").strip() or None
+                except ValueError:
+                    code = None
+            else:
+                code = text
+            if code and code.isdigit():
+                logger.debug("Manifest Request Code 命中 %s: %s", url.split("/")[2], code)
+                cache[manifest_gid] = code
+                return code
+            code = None
+
+        logger.debug("未能获取 GID %s 的内容码", manifest_gid)
+        return None
+
+    def download_via_request_code(
+        self,
+        depot_id: str,
+        manifest_gid: str,
+        cdn_hosts: list[str] | None = None,
+    ) -> bytes | None:
+        """用内容码从 Valve 官方 CDN 拉取清单并解出标准 manifest。
+
+        实测（2026-10）：``https://steampipe.akamaized.net/depot/2347770/manifest/
+        7138855853134977810/5/12005229650648827506`` → 200，返回 ZIP（内含 'z' 条目）。
+        """
+        code = self.fetch_request_code(manifest_gid)
+        if not code:
+            return None
+
+        hosts = cdn_hosts if cdn_hosts is not None else self._get_cdn_hosts()
+        for host in hosts:
+            url = f"https://{host}/depot/{depot_id}/manifest/{manifest_gid}/5/{code}"
+            try:
+                resp = self._direct_http.get(url, timeout=25.0)
+            except Exception:
+                continue
+            if resp.status_code != 200 or len(resp.content) < 16:
+                continue
+            payload = self._extract_manifest_payload(resp.content)
+            if payload and payload[:4] == STEAM_MANIFEST_MAGIC:
+                logger.info("内容码下载成功: %s/%s (%s)", depot_id, manifest_gid, host)
+                return payload
+        return None
+
+    def save_manifest(
+        self,
+        depot_id: str,
+        manifest_gid: str,
+        payload: bytes,
+        source_name: str = "external",
+    ) -> ManifestDownloadResult:
+        """公开的清单落盘接口（同时写入 depotcache 与 config/depotcache）。"""
+        return self._save_manifest_payload(depot_id, manifest_gid, payload, source_name)
 
     def _download_from_manifesthub(self, depot_id: str, manifest_gid: str) -> bytes | None:
         """从 ManifestHub API 拉取清单（若有 API Key）"""

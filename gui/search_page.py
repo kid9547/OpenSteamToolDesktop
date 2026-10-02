@@ -827,8 +827,74 @@ class SearchPage(ScrollArea):
             if card.app_id == app_id:
                 card.mark_added()
 
+    def _resolve_active_steam_dir(self) -> str:
+        """解析当前有效的 Steam 根路径（供清单流水线使用）"""
+        steam_dir = ""
+        if self._bridge:
+            steam_dir = self._bridge.get_steam_path()
+        if not steam_dir and self._game_manager and getattr(self._game_manager, "_steam_path", None):
+            steam_dir = self._game_manager._steam_path
+        if not steam_dir and self._game_manager and getattr(self._game_manager, "_lua_dir", None):
+            try:
+                steam_dir = os.path.dirname(os.path.dirname(os.path.abspath(self._game_manager._lua_dir)))
+            except Exception:
+                pass
+        return steam_dir
+
+    def _apply_archive_bindings(self, steam_dir: str, app_id: str, metadata) -> dict:
+        """归档优先：用社区分支归档里的真实 GID / depot 密钥对齐元数据。
+
+        这一步必须在写 Lua 之前执行。旧实现把 Steam 官方 API 返回的「当前
+        public 分支 GID」写进 Lua，再去社区仓库按该 GID 下载，社区仓库保存
+        的是历史清单，必然 404 —— 这正是「清单不全且补不齐」的根因。
+        """
+        result = {"patched_gids": 0, "patched_keys": 0, "repo": "", "ok": False}
+        if not steam_dir:
+            return result
+
+        all_depots = list(metadata.depots) + [d for _dlc, d in metadata.dlc_depots]
+        if not all_depots:
+            return result
+
+        try:
+            from core.manifest_resolver import ManifestResolver
+
+            resolver = ManifestResolver(steam_dir)
+            bindings = resolver.prefetch_archive_bindings(app_id)
+            resolver.close()
+        except Exception as e:
+            logger.warning(f"Archive binding prefetch failed for {app_id}: {e}")
+            return result
+
+        if not bindings.get("ok"):
+            logger.info(f"No AppID archive for {app_id}: {bindings.get('message', '')}")
+            return result
+
+        gid_map = bindings.get("gid_map") or {}
+        depot_keys = bindings.get("depot_keys") or {}
+        for depot in all_depots:
+            depot_id = str(depot.depot_id)
+            archive_gid = gid_map.get(depot_id)
+            if archive_gid and archive_gid != depot.manifest_gid:
+                depot.manifest_gid = archive_gid
+                result["patched_gids"] += 1
+            archive_key = depot_keys.get(depot_id)
+            if archive_key and not depot.depot_key:
+                depot.depot_key = archive_key
+                result["patched_keys"] += 1
+
+        result["ok"] = True
+        result["repo"] = bindings.get("repo", "")
+        logger.info(
+            f"Applied archive bindings for {app_id} from {result['repo']}: "
+            f"{result['patched_gids']} gids, {result['patched_keys']} keys"
+        )
+        return result
+
     def _do_fetch_metadata(self, app_id: str, game_name: str) -> dict | None:
-        """后台线程：获取元数据 → 写 Lua（Manifest 由 DLL 自动下载）"""
+        """后台线程：获取元数据 → 对齐归档 GID → 写 Lua → 下载清单"""
+        from core.manifest_resolver import ManifestResolver
+
         fetcher = None
         try:
             fetcher = MetadataFetcher()
@@ -837,22 +903,15 @@ class SearchPage(ScrollArea):
             if game_name and not metadata.name:
                 metadata.name = game_name
 
+            steam_dir = self._resolve_active_steam_dir()
+
+            # 归档优先：先对齐真实 GID / 密钥，再写 Lua，保证 Lua 与
+            # depotcache 落盘文件名 100% 自洽。
+            self._apply_archive_bindings(steam_dir, app_id, metadata)
+
             self._game_manager.add_game_with_metadata(metadata)
 
-            # 尝试自动化清单解析与获取流水线
-            from core.manifest_resolver import ManifestResolver
-            steam_dir = ""
-            if self._bridge:
-                steam_dir = self._bridge.get_steam_path()
-            elif self._game_manager and getattr(self._game_manager, "_steam_path", None):
-                steam_dir = self._game_manager._steam_path
-            elif self._game_manager and getattr(self._game_manager, "_lua_dir", None):
-                try:
-                    steam_dir = os.path.dirname(os.path.dirname(os.path.abspath(self._game_manager._lua_dir)))
-                except Exception:
-                    pass
-
-            # 收集主游戏与所有 DLC 的清单条目
+            # 收集主游戏与所有 DLC 的清单条目（已使用归档真实 GID）
             depots_tuple = []
             for d in metadata.depots:
                 if d.manifest_gid:
@@ -864,7 +923,7 @@ class SearchPage(ScrollArea):
             if steam_dir:
                 try:
                     resolver = ManifestResolver(steam_dir)
-                    resolver.resolve_manifests(app_id, depots_tuple, dlc_ids=metadata.dlc_ids)
+                    resolver.complete_app(app_id, depots_tuple, dlc_ids=metadata.dlc_ids)
                     resolver.close()
                 except Exception as e:
                     logger.warning(f"Auto manifest resolution error for {app_id}: {e}")
@@ -882,6 +941,18 @@ class SearchPage(ScrollArea):
                         in_cdc = os.path.isfile(os.path.join(config_depotcache_dir, mf_name)) and os.path.getsize(os.path.join(config_depotcache_dir, mf_name)) > 0
                         if not in_dc and not in_cdc:
                             missing_manifests.append(mf_name)
+
+            # 归档可能补充了元数据里没有的 depot（例如 DLC/共享 depot），
+            # 以 Lua 为准重新统计缺失情况，避免误报「已就绪」。
+            if steam_dir:
+                try:
+                    resolver = ManifestResolver(steam_dir)
+                    diag = resolver.diagnose_app(app_id)
+                    resolver.close()
+                    if diag.missing_manifests:
+                        missing_manifests = list(dict.fromkeys(missing_manifests + diag.missing_manifests))
+                except Exception as e:
+                    logger.debug(f"Post-completion diagnose failed for {app_id}: {e}")
 
             logger.info(f"Metadata fetch complete for {app_id} ({metadata.name}), missing manifests: {len(missing_manifests)}")
             return {

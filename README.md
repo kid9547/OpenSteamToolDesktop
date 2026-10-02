@@ -48,7 +48,9 @@
 
 | 功能             | 说明                                                  |
 | -------------- | --------------------------------------------------- |
-| **清单/Lua 导入**  | **新增**：支持点击选择或**全窗口拖拽**（`.manifest` / `.lua` / `.zip` 自动解压）批量导入，智能提取 AppID 并部署到双缓存目录 |
+| **清单/Lua 导入**  | 支持点击选择或**全窗口拖拽**（`.manifest` / `.lua` / `.zip` 自动解压）批量导入，智能提取 AppID 并部署到双缓存目录 |
+| **清单自动补全**   | 优先读取 AppID 分支归档并以归档内真实 GID 更新 Lua，兼容 CDN、社区仓库和历史清单版本，避免“文件已下载但仍显示缺失” |
+| **清单缓存管理**   | 可扫描 `depotcache` 与 `config/depotcache`，识别损坏项、重复项和未被 Lua 引用的孤儿清单；不会未经确认自动删除文件 |
 | **403 错误修复**   | **新增**：自动部署 `opensteamtool.toml` 与 `manifest.lua` 多源解析器（wudrm/steamrun），彻底解决 Steam 下载清单时 403 Access Denied 报错 |
 | **现代青蛙图标**    | **新增**：高清反锯齿全透明现代青蛙设计，修复 Windows 任务栏应用白图标显示问题 |
 | **注入管理**       | 一键部署/移除 OpenSteamTool DLL，三层验证确保注入状态准确，支持快捷重启 Steam |
@@ -152,6 +154,35 @@ OpenSteamTool 是通过 DLL 注入 Steam 客户端的 C++ 引擎，本工具为�
 ### 如何卸载注入？
 
 在「注入管理」页面点击「移除注入」，然后重启 Steam。也可以手动删除 Steam 根目录下的三个 DLL 文件。
+
+### D 加密（Denuvo）游戏进不去 / 报错 88500005？
+
+Denuvo 游戏需要**由 Valve 私钥签名的真实票据**（`AppTicket` + `ETicket`），本地无法伪造，因此：
+
+1. 在游戏卡片右键菜单选择 **「D 加密授权（导入/提取票据）」**；
+2. 三个来源任选其一：
+   * **文件导入** —— 拖入 `tickets.txt` / `appticket.bin` / `eticket.bin` / `.lua` / `.json`；
+   * **本机提取** —— 在**拥有该游戏的正版账号**机器上，Steam 已登录时点「开始提取」；
+   * **手动粘贴** —— 直接粘贴十六进制票据串；
+3. 程序会同时写入 **注册表凭据存储**
+   （`HKCU\Software\Valve\Steam\Apps\<AppID>` 的 `AppTicket` / `ETicket`，`REG_BINARY`）
+   和该游戏的 **Lua 配置**（`setAppTicket` / `setETicket`）；
+4. **重启 Steam** 后生效。
+
+注意事项：
+
+* 票据有效期约 **30 分钟 ~ 数小时**，过期会报 `88500005`，需要重新导入；
+* 票据必须属于 **当前登录的 Steam 账号**，否则 Denuvo 交叉校验会失败（错误码 `012`）；
+* 尚未启动过该游戏的账号可能拿不到 `ETicket`（会返回 `EResult 15`）；
+* 换硬件 / 重装系统后需要重新授权。
+
+> 想了解底层原理（为什么不能离线破解、参考软件到底怎么做的）请看
+> [DENUVO_REVERSE_ENGINEERING_REPORT.md](DENUVO_REVERSE_ENGINEERING_REPORT.md)。
+
+### 提取工具提示 Steam 未运行？
+
+本机提取依赖 `tools/extract_tickets/extract_tickets.exe` 与已登录的 Steam 会话通信。
+若该文件缺失，可用 `tools/build_extract_tickets.ps1` 重新编译（需要 MinGW-w64）。
 
 ---
 
