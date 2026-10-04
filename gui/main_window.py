@@ -66,6 +66,7 @@ class MainWindow(MSFluentWindow):
         from gui.search_page import SearchPage
         from gui.library_page import LibraryPage
         from gui.manifest_page import ManifestPage
+        from gui.denuvo_page import DenuvoAuthPage, DenuvoExtractPage
         from gui.settings_page import SettingsPage
         from config import ENABLE_ACCELERATOR_PAGE
 
@@ -90,6 +91,12 @@ class MainWindow(MSFluentWindow):
         self.manifest_page = ManifestPage(game_manager, bridge=bridge, parent=self)
         # 清单变动后刷新游戏库的清单就绪状态
         self.manifest_page.manifests_changed.connect(self.library_page._load_games_async)
+
+        # D 加密：提取 / 授权 两个独立页面
+        self.denuvo_extract_page = DenuvoExtractPage(game_manager, bridge=bridge, parent=self)
+        self.denuvo_auth_page = DenuvoAuthPage(game_manager, bridge=bridge, parent=self)
+        self.denuvo_auth_page.applied.connect(self.library_page._load_games_async)
+        self.denuvo_extract_page.applied.connect(self.library_page._load_games_async)
 
         self.settings_page = SettingsPage(
             config_manager,
@@ -123,6 +130,8 @@ class MainWindow(MSFluentWindow):
         self._search_nav_btn = self.addSubInterface(self.search_page, FluentIcon.SEARCH, "搜索入库")
         self._library_nav_btn = self.addSubInterface(self.library_page, FluentIcon.LIBRARY, "游戏库")
         self._manifest_nav_btn = self.addSubInterface(self.manifest_page, FluentIcon.ZIP_FOLDER, "清单管理")
+        self._denuvo_extract_nav_btn = self.addSubInterface(self.denuvo_extract_page, FluentIcon.CERTIFICATE, "D加密提取")
+        self._denuvo_auth_nav_btn = self.addSubInterface(self.denuvo_auth_page, FluentIcon.ACCEPT, "D加密授权")
         if self.accelerate_page:
             self._accelerate_nav_btn = self.addSubInterface(self.accelerate_page, FluentIcon.SPEED_HIGH, "科学加速")
         else:
@@ -325,9 +334,9 @@ class MainWindow(MSFluentWindow):
         )
 
     def _check_local_dll_mismatch(self):
-        """检查本地 DLL 版本是否匹配（原有逻辑）
+        """检查本地 DLL 版本是否匹配（不打扰：只做非阻塞提示）。
 
-        只有已注入时才检查（未注入时没有对比基准）
+        只有已注入时才检查（未注入时没有对比基准）。
         """
         if self._bridge is None or not self._bridge.is_deployed():
             return
@@ -335,23 +344,15 @@ class MainWindow(MSFluentWindow):
         try:
             mismatch, mismatched_dlls = self._bridge.check_dll_version_mismatch()
             if mismatch:
-                msg = "检测到 DLL 文件版本不匹配：\n\n"
-                msg += "\n".join([f"• {dll}" for dll in mismatched_dlls])
-                msg += "\n\n是否立即更新注入？"
-
-                msg_box = MessageBox(
+                InfoBar.warning(
                     "DLL 版本不匹配",
-                    msg,
-                    self,
+                    "检测到 Steam 目录中的 OpenSteamTool.dll 版本不一致（"
+                    + "、".join(mismatched_dlls[:2])
+                    + "）。已自动下载新版本，请在「注入管理」重新注入。",
+                    parent=self,
+                    position=InfoBarPosition.TOP,
+                    duration=8000,
                 )
-                msg_box.yesButton.setText("立即更新")
-                msg_box.cancelButton.setText("稍后提醒")
-
-                if msg_box.exec():
-                    self._update_and_inject()
-                else:
-                    # 用户选择稍后提醒，设置状态
-                    app_state.set(DLL_VERSION_MISMATCH, True)
         except Exception as e:
             logger.error(f"本地 DLL 版本检查失败: {e}")
 
@@ -442,6 +443,9 @@ class MainWindow(MSFluentWindow):
             "inject": self.inject_page,
             "search": self.search_page,
             "library": self.library_page,
+            "manifest": self.manifest_page,
+            "denuvo_extract": self.denuvo_extract_page,
+            "denuvo_auth": self.denuvo_auth_page,
         }
         self.switchTo(page_map.get(default, self.home_page))
 
@@ -455,6 +459,9 @@ class MainWindow(MSFluentWindow):
             "inject": self.inject_page,
             "search": self.search_page,
             "library": self.library_page,
+            "manifest": self.manifest_page,
+            "denuvo_extract": self.denuvo_extract_page,
+            "denuvo_auth": self.denuvo_auth_page,
         }
         target = page_map.get(page_key)
         if target:
@@ -541,7 +548,10 @@ class MainWindow(MSFluentWindow):
     # ---- 主题通知 ----
 
     def notify_theme_changed(self):
-        pages = [self.home_page, self.inject_page, self.search_page, self.library_page]
+        pages = [
+            self.home_page, self.inject_page, self.search_page, self.library_page,
+            self.manifest_page, self.denuvo_extract_page, self.denuvo_auth_page,
+        ]
         for page in pages:
             if hasattr(page, "notify_theme_changed"):
                 page.notify_theme_changed()
@@ -569,7 +579,10 @@ class MainWindow(MSFluentWindow):
 
     def shutdown(self):
         """清理所有页面的后台线程和资源"""
-        pages = [self.home_page, self.inject_page, self.search_page, self.library_page]
+        pages = [
+            self.home_page, self.inject_page, self.search_page, self.library_page,
+            self.manifest_page, self.denuvo_extract_page, self.denuvo_auth_page,
+        ]
 
         # 1. 停止定时器
         for page in pages:

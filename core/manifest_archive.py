@@ -229,6 +229,12 @@ class ManifestArchiveClient:
         )
         # 记录已被证伪的 (appid, repo) 组合，避免同一进程内反复重试
         self._missing_repos: set[tuple[str, str]] = set()
+        # 归档短时缓存：{appid: (时间戳, ManifestArchive)}。
+        # 一次搜索入库会先 prefetch_bindings 再 complete_app，两次都会请求
+        # 同一个 AppID 的归档；不缓存意味着整包 zip 被重复下载（最大几十 MB）。
+        self._archive_cache: dict[str, tuple[float, ManifestArchive]] = {}
+        self._archive_cache_ttl = 300.0
+        self._archive_cache_limit = 3
 
     # ── 资源管理 ──────────────────────────────────────────
 
@@ -400,15 +406,28 @@ class ManifestArchiveClient:
         return None
 
     def probe_branch(self, app_id: str, repo: str) -> bool:
-        """用极小的 ``config.json`` 探测某个仓库是否存在该 AppID 分支。"""
+        """用极小的 ``config.json`` 探测某个仓库是否存在该 AppID 分支。
+
+        只有当所有镜像都明确返回 404 时才把 ``(appid, repo)`` 记为"确实不存在"，
+        避免一次网络抖动（超时/连接失败）就把整个仓库在本进程内永久拉黑——
+        那会导致用户点第二次"补全"时也永远查不到本可命中的分支。
+        """
         key = (str(app_id), repo)
         if key in self._missing_repos:
             return False
+        definitive_404 = True
         for _label, url in build_branch_raw_urls(repo, str(app_id), "config.json")[:2]:
             resp = self._get(url, timeout=8.0)
-            if resp is not None and resp.status_code == 200 and resp.content[:1] == b"{":
+            if resp is None:
+                # 请求本身失败（超时/DNS/代理），不能当作"分支不存在"的证据
+                definitive_404 = False
+                continue
+            if resp.status_code == 200 and resp.content[:1] == b"{":
                 return True
-        self._missing_repos.add(key)
+            if resp.status_code != 404:
+                definitive_404 = False
+        if definitive_404:
+            self._missing_repos.add(key)
         return False
 
     def fetch_branch_config(self, app_id: str, repo: str) -> dict[str, Any] | None:
@@ -427,8 +446,18 @@ class ManifestArchiveClient:
         流程：先用 config.json 探测哪个仓库真的有该分支（1 个小请求），
         再把整包 zip 依次走 GitHub 直链 / ghfast / ghproxy 下载并解析。
         全部失败时返回 ``ok=False`` 的结果对象，不会抛异常。
+
+        成功结果会短时缓存（TTL 5 分钟、最多 3 个），同一进程内对同一
+        AppID 的连续请求（prefetch → complete）不会重复下载整包。
         """
         app_id = str(app_id)
+        cached = self._archive_cache.get(app_id)
+        if cached is not None:
+            timestamp, archive = cached
+            if time.time() - timestamp <= self._archive_cache_ttl:
+                return archive
+            self._archive_cache.pop(app_id, None)
+
         candidates = list(repos) if repos else list(self._repos)
         any_repo_found = False
 
@@ -461,6 +490,7 @@ class ManifestArchiveClient:
                         len(archive.depot_keys),
                         label,
                     )
+                    self._remember_archive(app_id, archive)
                     return archive
                 logger.debug("归档解析无有效清单 (%s) %s", label, url)
 
@@ -470,6 +500,13 @@ class ManifestArchiveClient:
         else:
             result.message = "找到分支但归档下载或解析失败"
         return result
+
+    def _remember_archive(self, app_id: str, archive: ManifestArchive) -> None:
+        """记录成功归档到短时缓存（FIFO 淘汰，限制内存占用）。"""
+        self._archive_cache[app_id] = (time.time(), archive)
+        while len(self._archive_cache) > self._archive_cache_limit:
+            oldest = next(iter(self._archive_cache))
+            self._archive_cache.pop(oldest, None)
 
     def fetch_keys(self, app_id: str, repos: list[str] | None = None) -> dict[str, str]:
         """只取分支的 Key.vdf（depot 解密密钥），不下载清单整包。"""

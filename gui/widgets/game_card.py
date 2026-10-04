@@ -325,7 +325,6 @@ class GameCard(CardWidget):
         else:
             menu.addAction(Action(FluentIcon.DOWNLOAD, "重新校验/补全清单", triggered=self._on_download_manifest))
         menu.addAction(Action(FluentIcon.FOLDER_ADD, "导入清单文件 (.manifest / .zip)", triggered=self._on_import_manifest))
-        menu.addAction(Action(FluentIcon.SEARCH, "在线寻找此游戏清单", triggered=self._search_manifest_online))
         menu.addAction(Action(FluentIcon.FOLDER, "打开清单目录 (depotcache)", triggered=self._open_depotcache))
         menu.addSeparator()
         menu.addAction(
@@ -375,11 +374,9 @@ class GameCard(CardWidget):
                 subprocess.Popen(["xdg-open", depot_dir])
 
     def _search_manifest_online(self):
-        from core.manifest_resolver import ManifestResolver
-        queries = ManifestResolver.get_search_queries(self.app_id, self.game_name)
-        url = queries.get("百度搜索", "")
-        if url:
-            webbrowser.open(url)
+        """（已弃用）跳浏览器搜索清单的方式满足不了实际入库需求，已从菜单移除。
+        请使用「一键下载/补全清单」或「清单管理」页面的联网补全。"""
+        return
 
     def _copy_appid(self):
         QApplication.clipboard().setText(self.app_id)

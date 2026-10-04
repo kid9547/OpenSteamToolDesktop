@@ -216,34 +216,58 @@ def main() -> None:
     window.show()
     logger.info("Application started successfully")
 
-    # ── 版本检查（异步，不阻塞 UI）────────
+    # ── 版本检查（异步、静默，不打扰用户）────────
+    # 原则：正常使用绝不弹窗。检查失败静默记日志（离线启动不应被干扰）；
+    # 有新版本时用自动消失的非阻塞 InfoBar 轻提示，可在设置页手动检查更新。
     from utils.async_worker import AsyncWorker
     from core.version_checker import check_for_updates
-    from gui.network_error_dialog import NetworkErrorDialog
-    from gui.upgrade_dialog import UpgradeDialog
 
     def _on_version_check_result(result):
-        """版本检查完成（主线程回调）"""
+        """版本检查完成（主线程回调，静默）"""
         release, error_msg = result
         if error_msg:
-            dlg = NetworkErrorDialog(error_msg, window)
-            dlg.exit_requested.connect(app.exit)
-            dlg.exec()
-        elif release is not None:
-            logger.info("发现新版本 v%s，显示升级对话框", release.version)
-            dlg = UpgradeDialog(release, window)
-            dlg.exec()
-            # 强制更新：无论用户点什么，都退出程序
-            logger.info("升级对话框关闭，强制退出程序（强制更新）")
-            app.quit()
+            logger.info("启动版本检查失败（静默跳过）: %s", error_msg)
+            return
+        if release is not None:
+            try:
+                from qfluentwidgets import InfoBar, InfoBarPosition
+
+                InfoBar.info(
+                    "发现新版本",
+                    f"v{release.version} 已发布（当前 v{APP_VERSION}），可在「设置」中查看更新。",
+                    parent=window,
+                    position=InfoBarPosition.TOP,
+                    duration=6000,
+                )
+            except Exception:  # noqa: BLE001 - 提示失败不应影响启动
+                logger.info("发现新版本 v%s", release.version)
 
     def _on_version_check_error(e):
-        logger.warning("更新检查异常，跳过: %s", e)
+        logger.info("启动版本检查异常（静默跳过）: %s", e)
 
-    _vc_worker = AsyncWorker(check_for_updates)
-    _vc_worker.finished_with_result.connect(_on_version_check_result)
-    _vc_worker.finished_with_error.connect(_on_version_check_error)
-    _vc_worker.start()
+    # 持有运行中 worker 的强引用：QThread 对象一旦在函数返回后被垃圾回收，
+    # Qt 会以 "QThread: Destroyed while thread is still running" 致命错误中止进程
+    # （表现为启动数秒后闪退）。
+    _vc_workers: list[AsyncWorker] = []
+
+    def _run_version_check():
+        """（重新）执行启动版本检查；静默策略下仅供启动调用。"""
+        worker = AsyncWorker(check_for_updates)
+
+        def _release(*_args) -> None:
+            try:
+                _vc_workers.remove(worker)
+            except ValueError:
+                pass
+
+        worker.finished_with_result.connect(_on_version_check_result)
+        worker.finished_with_result.connect(_release)
+        worker.finished_with_error.connect(_on_version_check_error)
+        worker.finished_with_error.connect(_release)
+        _vc_workers.append(worker)
+        worker.start()
+
+    _run_version_check()
 
     exit_code = app.exec()
 

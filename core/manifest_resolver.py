@@ -224,16 +224,20 @@ class ManifestResolver:
         app_id: str,
         depots: list[Any] | None = None,
         dlc_ids: list[str] | None = None,
+        archive: Any | None = None,
     ) -> CompletionReport:
         """「一键补全」单个游戏：归档优先 + 多源回退，返回逐 depot 结果。
 
         这是 GUI「补全清单 / 一键补全所有缺失清单」统一调用的入口。
+        ``archive`` 传入调用方已取到的分支归档时不再重复下载。
         """
         if not self._steam_path or not os.path.isdir(self._steam_path):
             report = CompletionReport(app_id=str(app_id))
             report.message = "Steam 安装路径无效"
             return report
-        return self._get_completion_service().complete_app(app_id, depots=depots, dlc_ids=dlc_ids)
+        return self._get_completion_service().complete_app(
+            app_id, depots=depots, dlc_ids=dlc_ids, archive=archive
+        )
 
     def complete_apps(self, app_ids: list[str]) -> BatchCompletionReport:
         """「一键补全」多个游戏，返回聚合结果"""
@@ -246,6 +250,14 @@ class ManifestResolver:
         if not self._steam_path or not os.path.isdir(self._steam_path):
             return {"ok": False, "gid_map": {}, "depot_keys": {}}
         return self._get_completion_service().prefetch_bindings(app_id)
+
+    def fetch_archive(self, app_id: str) -> ManifestArchive:
+        """取回（带客户端级短时缓存）指定 AppID 的分支归档。
+
+        供「归档对齐 → 写 Lua → complete_app」流程复用同一份归档，
+        避免整包 zip 在一次入库里被下载两遍。
+        """
+        return self._get_archive_client().fetch_appid_archive(str(app_id))
 
     def resolve_manifests(
         self,

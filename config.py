@@ -12,7 +12,7 @@ from pathlib import Path
 
 # ============ 应用信息 ============
 APP_NAME: str = "OpenSteamToolDesktop"
-APP_VERSION: str = "1.0.4"
+APP_VERSION: str = "1.1.0"
 
 # ============ 功能模块开关 ============
 # 科学加速页面开关（默认关闭；可通过环境变量 ENABLE_ACCELERATOR=1 或构建参数 --with-accelerator 开启）
@@ -170,15 +170,17 @@ COLOR_WARNING: str = "#ff9800"
 TEXT_COLOR: str = "#FFFFFF"  # 所有文字统一白色
 
 # ============ Steam CDN 备用列表 ============
+# 说明（2026-10 实测）：
+#   * ``steampipe.akamaized.net`` 是 Valve 官方 Akamai 入口，无需 Steam API 即可直连；
+#   * 形如 ``cache1-steamcontent.com`` 的无区域后缀主机已无法解析（ConnectError），
+#     真实主机均为 ``cache<N>-<区域>.steamcontent.com`` 形态；
+#   * 正常路径优先使用 Steam API 动态下发的主机列表，此表仅作 API 失败时的兜底。
 FALLBACK_CDN_HOSTS: list[str] = [
-    "cache1-steamcontent.com",
-    "cache2-steamcontent.com",
-    "cache3-steamcontent.com",
-    "cache4-steamcontent.com",
-    "cache5-steamcontent.com",
-    "cache6-steamcontent.com",
-    "cache7-steamcontent.com",
-    "cache8-steamcontent.com",
-    "cache9-steamcontent.com",
-    "cache10-steamcontent.com",
+    "steampipe.akamaized.net",
+    "cache1-hkg1.steamcontent.com",
+    "cache2-hkg1.steamcontent.com",
+    "cache3-hkg1.steamcontent.com",
+    "cache4-hkg1.steamcontent.com",
+    "cache1-lax1.steamcontent.com",
+    "cache2-lax1.steamcontent.com",
 ]

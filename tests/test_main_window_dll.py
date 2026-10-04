@@ -143,33 +143,23 @@ class TestMainWindowDLL:
 
     # ===== 测试 5.6: 检查本地 DLL 版本不匹配 =====
     def test_check_local_dll_mismatch_found(self, mock_main_window):
-        """测试 5.6: 检测到 DLL 版本不匹配，应提示用户"""
+        """测试 5.6: 检测到 DLL 版本不匹配，应给出非阻塞 InfoBar 提示
+
+        原则是"正常使用不弹窗"：不匹配属于异常情况，但提示用非模态
+        InfoBar，不再弹出 MessageBox、不再中断启动流程。
+        """
         # Mock bridge.check_dll_version_mismatch 返回不匹配
         mock_main_window._bridge.check_dll_version_mismatch.return_value = (
             True,
             ["OpenSteamTool.dll"],
         )
 
-        # Mock MessageBox
-        with patch('gui.main_window.MessageBox') as mock_msg_box:
-            mock_instance = Mock()
-            mock_instance.exec.return_value = False  # 用户点击"稍后提醒"
-            mock_instance.yesButton = Mock()
-            mock_instance.cancelButton = Mock()
-            mock_msg_box.return_value = mock_instance
+        # Mock InfoBar（非阻塞提示）
+        with patch('gui.main_window.InfoBar') as mock_info_bar:
+            mock_main_window._check_local_dll_mismatch()
 
-            # Mock app_state
-            with patch('gui.main_window.app_state') as mock_app_state:
-                # 调用
-                mock_main_window._check_local_dll_mismatch()
-
-                # 验证 MessageBox 被创建
-                mock_msg_box.assert_called_once()
-
-                # 验证状态被设置
-                mock_app_state.set.assert_called_once_with(
-                    DLL_VERSION_MISMATCH, True
-                )
+            # 验证 InfoBar.warning 被调用（非阻塞）
+            mock_info_bar.warning.assert_called_once()
 
     # ===== 测试 5.7: 检查本地 DLL 版本匹配 =====
     def test_check_local_dll_mismatch_none(self, mock_main_window):

@@ -1,5 +1,8 @@
 """
 网络错误弹窗 — 使用 qfluentwidgets 风格
+
+只提供与故障本身相关的操作（打开项目主页、重试、退出），
+不包含任何第三方推广内容。
 """
 from __future__ import annotations
 
@@ -13,7 +16,7 @@ from qfluentwidgets import (
     FluentIcon, isDarkTheme,
 )
 
-from config import GITHUB_RELEASES_URL
+from config import GITHUB_REPO_URL
 
 
 class NetworkErrorDialog(QDialog):
@@ -21,12 +24,14 @@ class NetworkErrorDialog(QDialog):
 
     # 信号：用户选择退出应用
     exit_requested = pyqtSignal()
+    # 信号：用户选择重试（由主窗口决定重试什么）
+    retry_requested = pyqtSignal()
 
     def __init__(self, error_msg: str, parent=None):
         super().__init__(parent)
         self._error_msg = error_msg
         self.setWindowTitle("连接失败")
-        self.setFixedSize(480, 310)
+        self.setFixedSize(480, 280)
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowTitleHint | Qt.WindowType.CustomizeWindowHint)
         self.setModal(True)
 
@@ -65,7 +70,8 @@ class NetworkErrorDialog(QDialog):
 
         # 建议
         hint = BodyLabel(
-            "如果因网络限制无法访问 GitHub，可尝试以下方案：",
+            "请检查本机网络连接；若网络需要代理，请先开启系统代理后重试。\n"
+            "也可以到项目主页查看常见问题与最新版本。",
             self,
         )
         hint.setWordWrap(True)
@@ -74,43 +80,29 @@ class NetworkErrorDialog(QDialog):
 
         layout.addStretch()
 
-        # ── 按钮区（两行布局）────────────────────────────
+        # 按钮区：重试（主操作）+ 项目主页 + 退出
+        button_row = QHBoxLayout()
+        button_row.setSpacing(12)
 
-        # 第一行：主操作 + 退出
-        primary_row = QHBoxLayout()
-        primary_row.setSpacing(12)
+        self.retry_btn = PrimaryPushButton(FluentIcon.SYNC, "重试", self)
+        self.retry_btn.setMinimumWidth(110)
+        self.retry_btn.clicked.connect(self._on_retry)
 
-        self.github_btn = PrimaryPushButton(FluentIcon.GITHUB, "前往项目主页", self)
-        self.github_btn.setMinimumWidth(160)
+        self.github_btn = PushButton(FluentIcon.GITHUB, "前往项目主页", self)
+        self.github_btn.setMinimumWidth(150)
         self.github_btn.clicked.connect(self._on_github)
 
         self.exit_btn = PushButton("退出", self)
         self.exit_btn.setMinimumWidth(80)
         self.exit_btn.clicked.connect(self._on_exit)
 
-        primary_row.addWidget(self.github_btn)
-        primary_row.addStretch()
-        primary_row.addWidget(self.exit_btn)
+        button_row.addStretch()
+        button_row.addWidget(self.retry_btn)
+        button_row.addWidget(self.github_btn)
+        button_row.addWidget(self.exit_btn)
+        button_row.addStretch()
 
-        # 第二行：辅助方案（居中）
-        helper_row = QHBoxLayout()
-        helper_row.setSpacing(12)
-
-        self.watt_btn = PushButton(FluentIcon.DOWNLOAD, "安装 Watt Toolkit", self)
-        self.watt_btn.setMinimumWidth(155)
-        self.watt_btn.clicked.connect(self._on_watt)
-
-        self.vpn_btn = PushButton(FluentIcon.GLOBE, "科学上网(2元)", self)
-        self.vpn_btn.setMinimumWidth(130)
-        self.vpn_btn.clicked.connect(self._on_vpn)
-
-        helper_row.addStretch()
-        helper_row.addWidget(self.watt_btn)
-        helper_row.addWidget(self.vpn_btn)
-        helper_row.addStretch()
-
-        layout.addLayout(primary_row)
-        layout.addLayout(helper_row)
+        layout.addLayout(button_row)
 
     def _apply_theme(self):
         dark = isDarkTheme()
@@ -124,15 +116,11 @@ class NetworkErrorDialog(QDialog):
         """)
 
     def _on_github(self):
-        webbrowser.open(GITHUB_RELEASES_URL)
+        webbrowser.open(GITHUB_REPO_URL)
         self.reject()
 
-    def _on_watt(self):
-        webbrowser.open("ms-windows-store://pdp/?productid=9MTCFHS560NG")
-        self.reject()
-
-    def _on_vpn(self):
-        webbrowser.open("https://xn--9kqz23b19z.com/#/register?code=fVqOtCnc")
+    def _on_retry(self):
+        self.retry_requested.emit()
         self.reject()
 
     def _on_exit(self):

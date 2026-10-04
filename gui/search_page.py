@@ -181,6 +181,13 @@ class _SearchResultCard(CardWidget):
         if not self._added:
             self.add_requested.emit(self.app_id, self.game_name)
 
+    def mark_processing(self):
+        """后台正在获取元数据/清单，按钮进入处理中状态"""
+        self._added = True
+        self.add_btn.setText("配置中…")
+        self.add_btn.setIcon(QIcon())
+        self.add_btn.setEnabled(False)
+
     def mark_added(self):
         self._added = True
         self.add_btn.setText("已入库")
@@ -794,11 +801,11 @@ class SearchPage(ScrollArea):
 
             # 即时入库（先入库，后台拉元数据）
             self._game_manager.add_game_basic(app_id, game_name)
-            self._mark_cards_added(app_id)
+            self._mark_cards_processing(app_id)
             if self._bridge and self._bridge.is_deployed():
-                tip_msg = "已加入游戏库，重启 Steam 即可生效"
+                tip_msg = "已加入游戏库，正在后台获取清单…"
             else:
-                tip_msg = "已加入游戏库（提示：在「注入管理」注入并启动 Steam 即可生效）"
+                tip_msg = "已加入游戏库（提示：在「注入管理」注入并启动 Steam 即可生效），正在后台获取清单…"
             InfoBar.success(
                 "入库成功", f"AppID {app_id} {game_name or ''} {tip_msg}",
                 parent=self, position=InfoBarPosition.TOP,
@@ -810,6 +817,9 @@ class SearchPage(ScrollArea):
             worker.finished_with_result.connect(
                 lambda r: self._on_metadata_done(app_id, r), Qt.ConnectionType.QueuedConnection
             )
+            worker.finished_with_error.connect(
+                lambda err: self._on_metadata_error(app_id, err), Qt.ConnectionType.QueuedConnection
+            )
             self._register_worker(worker)
             worker.start()
         except Exception as e:
@@ -819,12 +829,25 @@ class SearchPage(ScrollArea):
                 parent=self, position=InfoBarPosition.TOP, duration=6000,
             )
 
+    def _mark_cards_processing(self, app_id: str):
+        for card in (*self._cards, *self._rec_cards):
+            if card.app_id == app_id:
+                card.mark_processing()
+
     def _mark_cards_added(self, app_id: str):
         for card in self._cards:
             if card.app_id == app_id:
                 card.mark_added()
         for card in self._rec_cards:
             if card.app_id == app_id:
+                card.mark_added()
+
+    def _restore_cards(self, app_id: str):
+        """后台配置失败时把卡片按钮恢复为可重试状态"""
+        for card in (*self._cards, *self._rec_cards):
+            if card.app_id == app_id and not self._game_manager.has_game(app_id):
+                card.restore_state()
+            elif card.app_id == app_id:
                 card.mark_added()
 
     def _resolve_active_steam_dir(self) -> str:
@@ -841,61 +864,65 @@ class SearchPage(ScrollArea):
                 pass
         return steam_dir
 
-    def _apply_archive_bindings(self, steam_dir: str, app_id: str, metadata) -> dict:
+    def _align_archive_bindings(self, resolver, app_id: str, metadata) -> Any:
         """归档优先：用社区分支归档里的真实 GID / depot 密钥对齐元数据。
 
         这一步必须在写 Lua 之前执行。旧实现把 Steam 官方 API 返回的「当前
         public 分支 GID」写进 Lua，再去社区仓库按该 GID 下载，社区仓库保存
         的是历史清单，必然 404 —— 这正是「清单不全且补不齐」的根因。
-        """
-        result = {"patched_gids": 0, "patched_keys": 0, "repo": "", "ok": False}
-        if not steam_dir:
-            return result
 
+        Returns:
+            取到的 :class:`ManifestArchive`（ok 可能为 False），供
+            ``complete_app`` 复用，避免归档整包被重复下载。
+        """
         all_depots = list(metadata.depots) + [d for _dlc, d in metadata.dlc_depots]
         if not all_depots:
-            return result
+            from core.manifest_archive import ManifestArchive
+
+            return ManifestArchive(app_id=str(app_id))
 
         try:
-            from core.manifest_resolver import ManifestResolver
-
-            resolver = ManifestResolver(steam_dir)
-            bindings = resolver.prefetch_archive_bindings(app_id)
-            resolver.close()
+            archive = resolver.fetch_archive(app_id)
         except Exception as e:
             logger.warning(f"Archive binding prefetch failed for {app_id}: {e}")
-            return result
+            from core.manifest_archive import ManifestArchive
 
-        if not bindings.get("ok"):
-            logger.info(f"No AppID archive for {app_id}: {bindings.get('message', '')}")
-            return result
+            return ManifestArchive(app_id=str(app_id))
 
-        gid_map = bindings.get("gid_map") or {}
-        depot_keys = bindings.get("depot_keys") or {}
+        if not archive.ok:
+            logger.info(f"No AppID archive for {app_id}: {archive.message}")
+            return archive
+
+        gid_map = archive.gid_map
+        depot_keys = archive.depot_keys
+        patched_gids = patched_keys = 0
         for depot in all_depots:
             depot_id = str(depot.depot_id)
             archive_gid = gid_map.get(depot_id)
             if archive_gid and archive_gid != depot.manifest_gid:
                 depot.manifest_gid = archive_gid
-                result["patched_gids"] += 1
+                patched_gids += 1
             archive_key = depot_keys.get(depot_id)
             if archive_key and not depot.depot_key:
                 depot.depot_key = archive_key
-                result["patched_keys"] += 1
+                patched_keys += 1
 
-        result["ok"] = True
-        result["repo"] = bindings.get("repo", "")
         logger.info(
-            f"Applied archive bindings for {app_id} from {result['repo']}: "
-            f"{result['patched_gids']} gids, {result['patched_keys']} keys"
+            f"Applied archive bindings for {app_id} from {archive.repo}: "
+            f"{patched_gids} gids, {patched_keys} keys"
         )
-        return result
+        return archive
 
     def _do_fetch_metadata(self, app_id: str, game_name: str) -> dict | None:
-        """后台线程：获取元数据 → 对齐归档 GID → 写 Lua → 下载清单"""
+        """后台线程：获取元数据 → 对齐归档 GID → 写 Lua → 下载清单
+
+        全程复用同一个 :class:`ManifestResolver`（及其带短时缓存的归档客户端）：
+        归档整包只下载一次，prefetch / complete / diagnose 共享结果。
+        """
         from core.manifest_resolver import ManifestResolver
 
         fetcher = None
+        resolver = None
         try:
             fetcher = MetadataFetcher()
             metadata = fetcher.fetch_all(app_id)
@@ -905,13 +932,17 @@ class SearchPage(ScrollArea):
 
             steam_dir = self._resolve_active_steam_dir()
 
-            # 归档优先：先对齐真实 GID / 密钥，再写 Lua，保证 Lua 与
-            # depotcache 落盘文件名 100% 自洽。
-            self._apply_archive_bindings(steam_dir, app_id, metadata)
+            archive = None
+            if steam_dir:
+                resolver = ManifestResolver(steam_dir)
+                # 归档优先：先对齐真实 GID / 密钥，再写 Lua，保证 Lua 与
+                # depotcache 落盘文件名 100% 自洽。
+                archive = self._align_archive_bindings(resolver, app_id, metadata)
 
             self._game_manager.add_game_with_metadata(metadata)
 
             # 收集主游戏与所有 DLC 的清单条目（已使用归档真实 GID）
+            all_depots_list = list(metadata.depots) + [d for _, d in metadata.dlc_depots]
             depots_tuple = []
             for d in metadata.depots:
                 if d.manifest_gid:
@@ -920,18 +951,15 @@ class SearchPage(ScrollArea):
                 if d.manifest_gid:
                     depots_tuple.append((d.depot_id, d.manifest_gid, d.size, str(dlc_id)))
 
-            if steam_dir:
+            missing_manifests: list[str] = []
+            if resolver is not None:
                 try:
-                    resolver = ManifestResolver(steam_dir)
-                    resolver.complete_app(app_id, depots_tuple, dlc_ids=metadata.dlc_ids)
-                    resolver.close()
+                    # 传入已取到的归档，避免整包 zip 重复下载
+                    resolver.complete_app(app_id, depots_tuple, dlc_ids=metadata.dlc_ids, archive=archive)
                 except Exception as e:
                     logger.warning(f"Auto manifest resolution error for {app_id}: {e}")
 
-            # 检查是否有缺少本地清单的 depot（包括主游戏与 DLC）
-            missing_manifests = []
-            all_depots_list = list(metadata.depots) + [d for _, d in metadata.dlc_depots]
-            if steam_dir:
+                # 检查是否有缺少本地清单的 depot（包括主游戏与 DLC）
                 depotcache_dir = os.path.join(steam_dir, "depotcache")
                 config_depotcache_dir = os.path.join(steam_dir, "config", "depotcache")
                 for d in all_depots_list:
@@ -942,13 +970,10 @@ class SearchPage(ScrollArea):
                         if not in_dc and not in_cdc:
                             missing_manifests.append(mf_name)
 
-            # 归档可能补充了元数据里没有的 depot（例如 DLC/共享 depot），
-            # 以 Lua 为准重新统计缺失情况，避免误报「已就绪」。
-            if steam_dir:
+                # 归档可能补充了元数据里没有的 depot（例如 DLC/共享 depot），
+                # 以 Lua 为准重新统计缺失情况，避免误报「已就绪」。
                 try:
-                    resolver = ManifestResolver(steam_dir)
                     diag = resolver.diagnose_app(app_id)
-                    resolver.close()
                     if diag.missing_manifests:
                         missing_manifests = list(dict.fromkeys(missing_manifests + diag.missing_manifests))
                 except Exception as e:
@@ -967,7 +992,7 @@ class SearchPage(ScrollArea):
             }
         except Exception as e:
             logger.warning(f"Metadata fetch failed for {app_id}: {e}")
-            return None
+            return {"error": str(e), "app_id": app_id, "game_name": game_name}
         finally:
             # 确保 HTTP 客户端被正确关闭，避免资源泄露
             if fetcher is not None:
@@ -975,10 +1000,37 @@ class SearchPage(ScrollArea):
                     fetcher.close()
                 except Exception as e:
                     logger.debug(f"Close fetcher failed: {e}")
+            if resolver is not None:
+                try:
+                    resolver.close()
+                except Exception as e:
+                    logger.debug(f"Close resolver failed: {e}")
 
     def _on_metadata_done(self, app_id: str, result: dict | None):
         """后台元数据获取完成"""
         if not result:
+            self._restore_cards(app_id)
+            InfoBar.error(
+                "入库配置失败",
+                f"AppID {app_id} 后台获取元数据失败，请检查网络后重试。",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=6000,
+            )
+            return
+
+        if result.get("error"):
+            self._restore_cards(app_id)
+            logger.warning(f"Metadata pipeline failed for {app_id}: {result['error']}")
+            InfoBar.error(
+                "入库配置失败",
+                f"AppID {app_id} 《{result.get('game_name') or ''}》后台配置失败：{result['error']}\n"
+                "游戏已加入游戏库，可在「清单管理」页面点击「一键补全缺失清单」重试。",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=8000,
+            )
+            self.library_changed.emit()
             return
 
         logger.info(f"Game {app_id} Lua + Manifest ready: {result}")
@@ -988,6 +1040,8 @@ class SearchPage(ScrollArea):
         missing = result.get("missing_manifests", [])
         has_token = result.get("has_access_token", False)
         game_name = result.get("game_name", "")
+
+        self._mark_cards_added(app_id)
 
         # 触发游戏库刷新
         self.library_changed.emit()
@@ -1000,7 +1054,8 @@ class SearchPage(ScrollArea):
             InfoBar.warning(
                 "入库成功（需补充清单）",
                 f"AppID {app_id} 《{game_name or ''}》已生成 Lua 配置（{depot_count} 个 Depot，{depot_keys} 个密钥）。\n"
-                f"提示：当前尚缺清单 {missing_str}。您可在「已入库」页面卡片菜单中点击「导入清单/ZIP」或「在线寻找清单」。",
+                f"提示：当前尚缺清单 {missing_str}。可在「清单管理」页面点击「一键补全缺失清单」重试，"
+                "或在游戏库卡片菜单中「导入清单/ZIP」。",
                 parent=self,
                 position=InfoBarPosition.TOP,
                 duration=7000,
@@ -1014,6 +1069,18 @@ class SearchPage(ScrollArea):
                 position=InfoBarPosition.TOP,
                 duration=6000,
             )
+
+    def _on_metadata_error(self, app_id: str, error: str):
+        """后台任务异常（线程级失败）"""
+        self._restore_cards(app_id)
+        logger.warning(f"Metadata worker failed for {app_id}: {error}")
+        InfoBar.error(
+            "入库配置失败",
+            f"AppID {app_id} 后台任务失败：{error}",
+            parent=self,
+            position=InfoBarPosition.TOP,
+            duration=6000,
+        )
 
     def _open_import_manifest_for_game(self, app_id: str):
         """打开文件选择器导入此游戏的清单或 zip 包"""
@@ -1343,6 +1410,13 @@ class _RecommendCard(CardWidget):
     def _on_add(self):
         if not self._added:
             self.add_requested.emit(self.app_id, self.game_name)
+
+    def mark_processing(self):
+        """后台正在获取元数据/清单，按钮进入处理中状态"""
+        self._added = True
+        self.add_btn.setText("配置中…")
+        self.add_btn.setIcon(QIcon())
+        self.add_btn.setEnabled(False)
 
     def mark_added(self):
         self._added = True

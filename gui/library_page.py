@@ -140,14 +140,8 @@ class LibraryPage(ScrollArea):
         action_open_depot.triggered.connect(self._open_depotcache_dir)
         action_open_lua = Action(FluentIcon.CODE, "打开 Lua 配置目录", self)
         action_open_lua.triggered.connect(self._open_lua_dir)
-        action_check_manifest_cache = Action(FluentIcon.SEARCH, "检查清单缓存健康状态", self)
-        action_check_manifest_cache.triggered.connect(self._on_check_manifest_cache)
-        action_clean_all = Action(FluentIcon.BROOM, "清理 Steam 异常下载残留缓存", self)
-        action_clean_all.triggered.connect(self._on_clean_all_download_cache)
         import_menu.addAction(action_open_depot)
         import_menu.addAction(action_open_lua)
-        import_menu.addAction(action_check_manifest_cache)
-        import_menu.addAction(action_clean_all)
         self.import_btn.setMenu(import_menu)
         header.addWidget(self.import_btn)
 
@@ -700,7 +694,7 @@ class LibraryPage(ScrollArea):
                 app_id,
                 game_name=name,
                 parent=self,
-                steam_bridge=getattr(self, "_steam_bridge", None),
+                steam_bridge=self._bridge,
             )
             dialog.applied.connect(self._on_denuvo_applied)
             dialog.exec()
@@ -972,35 +966,7 @@ class LibraryPage(ScrollArea):
             d = self._bridge.get_lua_dir()
             self._bridge.open_directory(d)
 
-    def _on_clean_all_download_cache(self):
-        """一键清理所有异常下载缓存"""
-        if self._bridge:
-            success, msg = self._bridge.clean_download_cache()
-            if success:
-                InfoBar.success("清理成功", msg, parent=self, position=InfoBarPosition.TOP)
-            else:
-                InfoBar.error("清理失败", msg, parent=self, position=InfoBarPosition.TOP)
-
-    def _on_check_manifest_cache(self):
-        """扫描双 depotcache，报告损坏文件和未被 Lua 引用的孤儿清单。"""
-        steam_path = self._get_active_steam_path()
-        if not steam_path or not os.path.isdir(steam_path):
-            InfoBar.error("检查失败", "未检测到有效的 Steam 安装目录", parent=self, position=InfoBarPosition.TOP)
-            return
-        from core.manifest_cache import ManifestCacheManager
-
-        manager = ManifestCacheManager(steam_path)
-        records = manager.scan()
-        invalid_count = sum(1 for record in records if not record.valid)
-        orphan_count = len(manager.orphaned())
-        InfoBar.info(
-            "清单缓存检查完成",
-            f"共发现 {len(records)} 组清单，{invalid_count} 组损坏或不完整，{orphan_count} 组未被 Lua 引用。"
-            " 未引用文件不会被自动删除。",
-            parent=self,
-            position=InfoBarPosition.TOP,
-            duration=7000,
-        )
+    # 清单健康检查与残留缓存清理已并入「清单管理」页面（扫描/删除损坏清单/孤儿清理）。
 
     def _on_card_import_manifest(self, app_id: str):
         """从卡片直接打开文件选择器导入清单或配置文件"""

@@ -55,10 +55,17 @@ def test_main_window_assembles_with_manifest_page(qapp, workspace):
         assert hasattr(window, "manifest_page")
         assert hasattr(window, "library_page")
         assert window.manifest_page.objectName() == "manifestPage"
+        # D 加密提取 / 授权 独立页面
+        assert hasattr(window, "denuvo_extract_page")
+        assert hasattr(window, "denuvo_auth_page")
+        assert window.denuvo_extract_page.objectName() == "denuvoExtractPage"
+        assert window.denuvo_auth_page.objectName() == "denuvoAuthPage"
 
         # 导航按钮都在
         assert window._manifest_nav_btn is not None
         assert window._library_nav_btn is not None
+        assert window._denuvo_extract_nav_btn is not None
+        assert window._denuvo_auth_nav_btn is not None
     finally:
         window.close()
         window.deleteLater()
@@ -78,6 +85,8 @@ def test_navigation_can_switch_to_every_page(qapp, workspace):
             window.search_page,
             window.library_page,
             window.manifest_page,
+            window.denuvo_extract_page,
+            window.denuvo_auth_page,
             window.settings_page,
         ]
         for page in pages:

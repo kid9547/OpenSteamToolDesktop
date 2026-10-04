@@ -6,6 +6,8 @@ AsyncWorker — 异步任务工作线程
 """
 from __future__ import annotations
 
+import inspect
+
 from PyQt6.QtCore import QThread, pyqtSignal
 
 
@@ -17,10 +19,20 @@ class AsyncWorker(QThread):
         worker.finished_with_result.connect(on_success)
         worker.finished_with_error.connect(on_error)
         worker.start()
+
+    进度上报：若 ``func`` 的签名里声明了 ``progress_cb`` 关键字参数，
+    工作线程会自动注入 ``progress_cb=self.progress.emit``，函数在执行
+    过程中调用 ``progress_cb(text)`` 即可把进度文本发回主线程::
+
+        def slow_job(progress_cb=None):
+            progress_cb and progress_cb("步骤 1/3 …")
+
+    ``progress`` 信号从工作线程发出，Qt 的队列连接保证槽函数在主线程执行。
     """
 
     finished_with_result = pyqtSignal(object)
     finished_with_error = pyqtSignal(str)
+    progress = pyqtSignal(str)
 
     def __init__(self, func, *args, **kwargs):
         super().__init__()
@@ -34,7 +46,15 @@ class AsyncWorker(QThread):
         try:
             if self._is_cancelled:
                 return
-            result = self._func(*self._args, **self._kwargs)
+            kwargs = dict(self._kwargs)
+            if "progress_cb" not in kwargs:
+                try:
+                    accepts_cb = "progress_cb" in inspect.signature(self._func).parameters
+                except (TypeError, ValueError):  # C 扩展 / 内置函数可能无签名
+                    accepts_cb = False
+                if accepts_cb:
+                    kwargs["progress_cb"] = self.progress.emit
+            result = self._func(*self._args, **kwargs)
             if not self._is_cancelled:
                 self.finished_with_result.emit(result)
         except Exception as e:

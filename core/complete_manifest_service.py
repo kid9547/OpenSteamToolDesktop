@@ -393,6 +393,7 @@ class ManifestCompletionService:
         dlc_ids: Iterable[str] | None = None,
         apply_keys: bool = True,
         write_lua: bool = True,
+        archive: ManifestArchive | None = None,
     ) -> CompletionReport:
         """为单个 AppID 补齐所有缺失清单，并返回逐 depot 结果。
 
@@ -402,6 +403,9 @@ class ManifestCompletionService:
             dlc_ids: DLC AppID 列表（仅用于日志/统计）
             apply_keys: 是否把归档 ``Key.vdf`` 中的 depot 密钥写入 Lua
             write_lua: 是否用归档中的真实 GID 回写 ``setManifestid``
+            archive: 调用方已取到的分支归档（可选）。传入后不再重复下载整包；
+                无论其 ``ok`` 与否都视为"已尝试过归档"，避免同一 AppID 的
+                归档在一次入库流程里被下载两遍。
 
         Returns:
             :class:`CompletionReport`
@@ -436,8 +440,12 @@ class ManifestCompletionService:
 
         lua_bindings = parse_lua_bindings(report.lua_path) if report.lua_path else {}
         for depot_id, binding in lua_bindings.items():
-            # addappid(appid) 是应用本体而不是 depot，不需要也不应该有清单
-            if depot_id == app_id:
+            # `addappid(appid)` 是应用本体而不是 depot，不需要清单；
+            # 但社区 Lua 常会给主 depot（depot ID == AppID）写
+            # `setManifestid(appid, "gid")` —— 这是真实的清单请求，必须下载。
+            # 旧逻辑一刀切跳过 depot==app_id，导致主 depot 清单"永远缺一个
+            # 却显示补全成功"（游戏库按 Lua 判定仍缺失）。
+            if depot_id == app_id and not binding.get("gid"):
                 continue
             entry = targets.setdefault(depot_id, {"gid": "", "size": 0, "owner": app_id})
             if not entry.get("gid") and binding.get("gid"):
@@ -449,7 +457,8 @@ class ManifestCompletionService:
 
         # ── 2. 归档优先：一次拿到真实 GID + 密钥 + 全部清单 ──
         write_sources: dict[str, str] = {}
-        archive = self._archive.fetch_appid_archive(app_id)
+        if archive is None:
+            archive = self._archive.fetch_appid_archive(app_id)
         if archive.ok:
             report.archive_repo = archive.repo
             report.archive_url = archive.source_url

@@ -94,11 +94,17 @@ class TestCdnFallback(unittest.TestCase):
     """CDN 备用列表测试"""
 
     def test_fallback_has_entries(self):
-        self.assertTrue(len(config.FALLBACK_CDN_HOSTS) >= 10)
+        self.assertTrue(len(config.FALLBACK_CDN_HOSTS) >= 5)
 
-    def test_fallback_all_steamcontent(self):
+    def test_fallback_hosts_are_reachable_forms(self):
+        """2026-10 实测：无区域后缀的 cacheN-steamcontent.com 已无法解析，
+        备用列表必须由官方 Akamai 入口与区域形态主机组成。"""
         for host in config.FALLBACK_CDN_HOSTS:
-            self.assertIn("steamcontent.com", host)
+            self.assertTrue(
+                "steamcontent.com" in host or host.endswith(".akamaized.net"),
+                f"host {host} 既不是 steamcontent 区域主机也不是 akamaized 入口",
+            )
+        self.assertIn("steampipe.akamaized.net", config.FALLBACK_CDN_HOSTS)
 
 
 if __name__ == "__main__":

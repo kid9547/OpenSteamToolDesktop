@@ -1,10 +1,8 @@
 """
 科学加速页面 — 提供网络加速方案入口
 
-包含：
-1. 科学上网(2元) - 低成本科学上网方案
-2. Watt Toolkit - Steam 社区加速工具
-3. 专业UI设计，符合 qfluentwidgets 风格
+只推荐免费、可公开获取的工具（Watt Toolkit），
+不包含任何付费推广或返利链接。
 """
 from __future__ import annotations
 
@@ -17,7 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from qfluentwidgets import (
-    PrimaryPushButton, PushButton, TitleLabel, BodyLabel,
+    PushButton, TitleLabel, BodyLabel,
     FluentIcon,
     CardWidget, StrongBodyLabel,
 )
@@ -26,9 +24,6 @@ from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-# 科学上网注册链接
-VPN_REGISTER_URL: str = "https://xn--9kqz23b19z.com/#/register?code=fVqOtCnc"
-
 # Watt Toolkit 商店链接
 WATT_TOOLKIT_STORE_URL: str = "ms-windows-store://pdp/?productid=9MTCFHS560NG"
 
@@ -36,7 +31,7 @@ WATT_TOOLKIT_STORE_URL: str = "ms-windows-store://pdp/?productid=9MTCFHS560NG"
 class AcceleratePage(QWidget):
     """科学加速页面
 
-    提供多种网络加速方案，解决 Steam 社区、GitHub 等网站访问问题。
+    提供免费的网络加速方案，解决 Steam 社区、GitHub 等网站访问问题。
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -59,11 +54,7 @@ class AcceleratePage(QWidget):
         cards_layout = QHBoxLayout()
         cards_layout.setSpacing(20)
 
-        # 方案 1：科学上网
-        vpn_card = self._create_vpn_card()
-        cards_layout.addWidget(vpn_card)
-
-        # 方案 2：Watt Toolkit
+        # Watt Toolkit（免费开源社区加速工具）
         watt_card = self._create_watt_card()
         cards_layout.addWidget(watt_card)
 
@@ -92,56 +83,6 @@ class AcceleratePage(QWidget):
         layout.addWidget(subtitle)
 
         return widget
-
-    def _create_vpn_card(self) -> CardWidget:
-        """创建科学上网方案卡片"""
-        card = CardWidget(self)
-        card.setFixedSize(320, 310)
-
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(10)
-
-        # 图标
-        icon_label = QLabel(card)
-        icon_label.setPixmap(FluentIcon.GLOBE.icon().pixmap(40, 40))
-        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(icon_label)
-
-        # 标题
-        title = StrongBodyLabel("科学上网", card)
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
-
-        # 价格标签
-        price = QLabel("¥2/月", card)
-        price.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        price.setStyleSheet(
-            "font-size: 22px; font-weight: bold; color: #52c41a;"
-        )
-        layout.addWidget(price)
-
-        # 描述
-        desc = BodyLabel(
-            "低成本科学上网方案\n"
-            "支持 Steam、GitHub 加速",
-            card,
-        )
-        desc.setWordWrap(True)
-        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        desc.setStyleSheet("color: #999999; font-size: 12px; line-height: 1.4;")
-        layout.addWidget(desc)
-
-        layout.addStretch()
-
-        # 按钮
-        btn = PrimaryPushButton("立即注册", card)
-        btn.setIcon(FluentIcon.GLOBE)
-        btn.setFixedHeight(36)
-        btn.clicked.connect(self._on_vpn_register)
-        layout.addWidget(btn)
-
-        return card
 
     def _create_watt_card(self) -> CardWidget:
         """创建 Watt Toolkit 方案卡片"""
@@ -214,11 +155,6 @@ class AcceleratePage(QWidget):
         # 不设置任何样式表，让 MSFluentWindow 统一管理主题
         # 避免全局 QWidget 样式污染其他页面
         pass
-
-    def _on_vpn_register(self):
-        """打开科学上网注册页面"""
-        logger.info(f"Opening VPN register page: {VPN_REGISTER_URL}")
-        webbrowser.open(VPN_REGISTER_URL)
 
     def _on_watt_install(self):
         """打开 Watt Toolkit 安装页面"""

@@ -39,6 +39,108 @@ def test_orphaned_and_sync_are_explicit(tmp_path):
     assert cache.delete("101_201") == 1
 
 
+def test_orphaned_uses_depot_level_not_exact_gid(tmp_path):
+    """回归测试：只有 addappid(depot) 绑定、没有 setManifestid 的 depot，
+    其清单同样会被 Steam 使用，绝不能按精确 GID 匹配误判成孤儿。
+
+    历史事故：孤儿清理按 ``setManifestid(depot, gid)`` 精确匹配判定，
+    把 DLC / 共享 Redist depot 的在用清单清掉了。
+    """
+    cache = ManifestCacheManager(str(tmp_path))
+    depot_dir = tmp_path / "depotcache"
+    lua_dir = tmp_path / "config" / "lua"
+    depot_dir.mkdir(parents=True)
+    lua_dir.mkdir(parents=True)
+    # Lua 只声明 addappid(300, 0, "key")，没有任何 setManifestid
+    (lua_dir / "300.lua").write_text(
+        'addappid(300, 0, "ab" * 32)\naddappid(301, 0, "cd" * 32)\n',
+        encoding="utf-8",
+    )
+    (depot_dir / "301_999.manifest").write_bytes(STEAM_MANIFEST_MAGIC + b"payload")
+    # 完全无人引用的 depot → 真孤儿
+    (depot_dir / "404_888.manifest").write_bytes(STEAM_MANIFEST_MAGIC + b"payload")
+
+    assert [item.key for item in cache.orphaned(str(lua_dir))] == ["404_888"]
+    # 引用它的游戏可被反查
+    assert cache.depot_owner("301", str(lua_dir)) == "300"
+    assert cache.depot_owner("404", str(lua_dir)) == ""
+
+
+def test_orphaned_protects_installed_game_depots(tmp_path):
+    """回归测试：已安装正版游戏的清单绝不能被孤儿清理波及。
+
+    历史事故：正版/本地安装游戏的 depot 不在任何解锁 Lua 里，旧规则把它们
+    判成孤儿清掉，导致用户已安装的游戏损坏。
+    """
+    cache = ManifestCacheManager(str(tmp_path))
+    steamapps = tmp_path / "steamapps"
+    steamapps.mkdir()
+    (steamapps / "appmanifest_500.acf").write_text(
+        '"AppState"\n'
+        '{\n'
+        '\t"appid"\t\t"500"\n'
+        '\t"InstalledDepots"\n'
+        '\t{\n'
+        '\t\t"501"\t\t{ "manifest" "1000" }\n'
+        '\t}\n'
+        '\t"MountedDepots"\n'
+        '\t{\n'
+        '\t\t"502"\t\t{ "manifest" "1001" }\n'
+        '\t}\n'
+        '}\n',
+        encoding="utf-8",
+    )
+    depot_dir = tmp_path / "depotcache"
+    depot_dir.mkdir()
+    (depot_dir / "501_1000.manifest").write_bytes(STEAM_MANIFEST_MAGIC + b"a")
+    (depot_dir / "502_1001.manifest").write_bytes(STEAM_MANIFEST_MAGIC + b"b")
+    # 无任何归属 → 真孤儿
+    (depot_dir / "999_1002.manifest").write_bytes(STEAM_MANIFEST_MAGIC + b"c")
+
+    assert [item.key for item in cache.orphaned()] == ["999_1002"]
+    categories = {item["key"]: item["category"] for item in cache.classify(cache.scan())}
+    assert categories["501_1000"] == "installed"
+    assert categories["502_1001"] == "installed"
+    assert categories["999_1002"] == "orphan"
+
+
+def test_backup_and_delete_refuses_in_use_manifests(tmp_path):
+    """纵深防御：即使调用方把在用清单误传入 backup_and_delete，也必须拒移。"""
+    cache = ManifestCacheManager(str(tmp_path))
+    lua_dir = tmp_path / "config" / "lua"
+    lua_dir.mkdir(parents=True)
+    (lua_dir / "100.lua").write_text('setManifestid(100, "200")\n', encoding="utf-8")
+    depot_dir = tmp_path / "depotcache"
+    depot_dir.mkdir()
+    (depot_dir / "100_200.manifest").write_bytes(STEAM_MANIFEST_MAGIC + b"in-use")
+    (depot_dir / "777_888.manifest").write_bytes(STEAM_MANIFEST_MAGIC + b"orphan")
+
+    moved, _freed, backup_dir = cache.backup_and_delete(cache.scan())
+
+    # 在用清单原地不动，只有真孤儿被移动
+    assert (depot_dir / "100_200.manifest").is_file()
+    assert (depot_dir / "100_200.manifest").read_bytes() == STEAM_MANIFEST_MAGIC + b"in-use"
+    assert moved == 1
+    assert {p.name for p in Path(backup_dir).glob("*.manifest")} == {"777_888.manifest"}
+
+
+def test_backup_and_delete_moves_files_to_backup_dir(tmp_path):
+    cache = ManifestCacheManager(str(tmp_path))
+    depot_dir = tmp_path / "depotcache"
+    depot_dir.mkdir()
+    (depot_dir / "500_501.manifest").write_bytes(STEAM_MANIFEST_MAGIC + b"payload")
+
+    records = cache.scan()
+    moved, freed, backup_dir = cache.backup_and_delete(records)
+
+    assert moved == 1
+    assert freed > 0
+    assert not (depot_dir / "500_501.manifest").exists()
+    backup_path = Path(backup_dir)
+    backups = list(backup_path.glob("500_501.manifest"))
+    assert backups and backups[0].read_bytes().startswith(STEAM_MANIFEST_MAGIC)
+
+
 def test_delete_rejects_path_traversal(tmp_path):
     cache = ManifestCacheManager(str(tmp_path))
     try:

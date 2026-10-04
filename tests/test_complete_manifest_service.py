@@ -410,3 +410,48 @@ class TestReportHelpers:
         bindings = service.prefetch_bindings("123456")
         assert bindings["ok"] is False
         assert bindings["gid_map"] == {}
+
+
+class TestMainDepotPinning:
+    """回归测试：主 depot（depot ID == AppID）被 setManifestid 钉住时必须下载。
+
+    历史事故：complete_app 一刀切跳过 depot==app_id 的 Lua 绑定，导致社区
+    Lua 给主 depot 写的 setManifestid 永远不会被补清单，但报告却显示成功，
+    游戏库则一直显示"缺一个清单"。
+    """
+
+    def test_main_depot_setmanifestid_is_downloaded(self, steam_dir: Path):
+        lua = steam_dir / "config" / "lua" / "500.lua"
+        lua.write_text(
+            'addappid(500, 0, "ab" * 32)\n'
+            'setManifestid(500, "7127896784363312296")\n',
+            encoding="utf-8",
+        )
+        downloader = FakeDownloader(succeed=True, write_dir=steam_dir / "depotcache")
+        service, _client, dl = make_service(steam_dir, archive=None, downloader=downloader)
+        try:
+            report = service.complete_app("500")
+        finally:
+            service.close()
+
+        # 主 depot 的清单必须进入精确下载队列
+        requested = [(d[0], d[1]) for call in dl.calls for d in call[0]]
+        assert ("500", "7127896784363312296") in requested
+        # 落盘后报告必须为就绪
+        assert report.is_complete, report.summary()
+        assert report.downloaded == 1
+
+    def test_pure_addappid_app_line_still_skipped(self, steam_dir: Path):
+        """只有 addappid(appid)（应用本体行、无清单绑定）时不发起下载。"""
+        lua = steam_dir / "config" / "lua" / "600.lua"
+        lua.write_text('addappid(600, 0, "cd" * 32)\n', encoding="utf-8")
+        downloader = FakeDownloader(succeed=True, write_dir=steam_dir / "depotcache")
+        service, _client, dl = make_service(steam_dir, archive=None, downloader=downloader)
+        try:
+            report = service.complete_app("600")
+        finally:
+            service.close()
+
+        requested = [(d[0], d[1]) for call in dl.calls for d in call[0]]
+        assert requested == []
+        assert report.total == 0

@@ -15,6 +15,7 @@ import io
 import logging
 import os
 import re
+import threading
 import time
 import zipfile
 import zlib
@@ -28,7 +29,7 @@ from utils.logger import setup_logger
 
 from config import (
     STEAM_CDN_API, SSL_VERIFY,
-    MANIFEST_ARCHIVE_REPOS, MANIFEST_REQUEST_CODE_APIS,
+    FALLBACK_CDN_HOSTS, MANIFEST_ARCHIVE_REPOS, MANIFEST_REQUEST_CODE_APIS,
     MANIFESTHUB_API_URL, MANIFESTHUB_API_KEY,
 )
 from utils.http_client import get_system_proxy
@@ -99,21 +100,8 @@ def fetch_manifesthub_upstream_info(timeout: float = 6.0) -> dict[str, str]:
     return default_info
 
 
-# 常用 Steam CDN 备用列表（API 不可用时使用）
-_FALLBACK_CDN_HOSTS = [
-    "cache1-steamcontent.com",
-    "cache2-steamcontent.com",
-    "cache3-steamcontent.com",
-    "cache4-steamcontent.com",
-    "cache5-steamcontent.com",
-    "cache6-steamcontent.com",
-    "cache7-steamcontent.com",
-    "cache8-steamcontent.com",
-    "cache9-steamcontent.com",
-    "cache10-steamcontent.com",
-    "cache1-lax1.steamcontent.com",
-    "cache2-lax1.steamcontent.com",
-]
+# 常用 Steam CDN 备用列表（API 不可用时使用）——统一收敛到 config.FALLBACK_CDN_HOSTS
+_FALLBACK_CDN_HOSTS = FALLBACK_CDN_HOSTS
 
 
 @dataclass
@@ -467,6 +455,10 @@ class ManifestDownloader:
 
         内容码与 GID 绑定（同一 GID 对任意 Depot 返回同一个码），因此可以
         在多个 Depot 之间复用；缓存于实例内避免重复请求。
+
+        注意：``gmrc.wudrm.com`` 对并发请求会返回 503 限流（实测 8 并发下
+        5/30 失败），而批量下载是 4 线程并发的，因此这里用进程级信号量把
+        内容码请求串行化，并对 503/429 做退避重试。
         """
         if not manifest_gid:
             return None
@@ -478,35 +470,66 @@ class ManifestDownloader:
         if manifest_gid in cache:
             return cache[manifest_gid]
 
-        code: str | None = None
-        for template in MANIFEST_REQUEST_CODE_APIS:
-            url = template.format(gid=manifest_gid, depot="", appid="")
-            client = self._direct_http if "gmrc.wudrm.com" in url else self._http
-            try:
-                resp = client.get(url, timeout=12.0)
-            except Exception as exc:
-                logger.debug("内容码接口异常 %s: %s", url, exc)
-                continue
-            if resp.status_code != 200:
-                continue
-            text = resp.text.strip()
-            if not text:
-                continue
-            if text.startswith("{"):
-                try:
-                    code = str(resp.json().get("content") or "").strip() or None
-                except ValueError:
-                    code = None
-            else:
-                code = text
-            if code and code.isdigit():
-                logger.debug("Manifest Request Code 命中 %s: %s", url.split("/")[2], code)
-                cache[manifest_gid] = code
-                return code
-            code = None
+        code = self._fetch_request_code_throttled(manifest_gid)
+        if code:
+            cache[manifest_gid] = code
+        return code
 
-        logger.debug("未能获取 GID %s 的内容码", manifest_gid)
-        return None
+    # 内容码接口串行化信号量：gmrc.wudrm.com 并发即 503
+    _REQUEST_CODE_SEMAPHORE = threading.Semaphore(1)
+    _RETRYABLE_STATUS = (429, 500, 502, 503, 504)
+
+    def _fetch_request_code_throttled(self, manifest_gid: str) -> str | None:
+        """串行 + 退避重试地请求内容码（进程内全局节流）。"""
+        with self._REQUEST_CODE_SEMAPHORE:
+            # 二次检查缓存：前一个线程可能刚刚取到同一个 GID 的内容码
+            cache = getattr(self, "_request_code_cache", {})
+            if manifest_gid in cache:
+                return cache[manifest_gid]
+
+            for attempt in range(3):
+                if attempt:
+                    time.sleep(1.0 + 0.8 * attempt)  # 1.0s / 2.6s 退避
+                retryable_seen = False
+                code: str | None = None
+                for template in MANIFEST_REQUEST_CODE_APIS:
+                    url = template.format(gid=manifest_gid, depot="", appid="")
+                    client = self._direct_http if "gmrc.wudrm.com" in url else self._http
+                    try:
+                        resp = client.get(url, timeout=12.0)
+                    except Exception as exc:
+                        logger.debug("内容码接口异常 %s: %s", url, exc)
+                        retryable_seen = True
+                        continue
+                    if resp.status_code in self._RETRYABLE_STATUS:
+                        logger.debug(
+                            "内容码接口限流 %s（HTTP %d）",
+                            url.split("/")[2], resp.status_code,
+                        )
+                        retryable_seen = True
+                        continue
+                    if resp.status_code != 200:
+                        continue
+                    text = resp.text.strip()
+                    if not text:
+                        continue
+                    if text.startswith("{"):
+                        try:
+                            code = str(resp.json().get("content") or "").strip() or None
+                        except ValueError:
+                            code = None
+                    else:
+                        code = text
+                    if code and code.isdigit():
+                        logger.debug("Manifest Request Code 命中 %s: %s", url.split("/")[2], code)
+                        return code
+                    code = None
+                # 全部接口都是确定性失败（404/空响应）时不再退避重试
+                if not retryable_seen:
+                    break
+
+            logger.debug("未能获取 GID %s 的内容码", manifest_gid)
+            return None
 
     def download_via_request_code(
         self,
@@ -518,12 +541,19 @@ class ManifestDownloader:
 
         实测（2026-10）：``https://steampipe.akamaized.net/depot/2347770/manifest/
         7138855853134977810/5/12005229650648827506`` → 200，返回 ZIP（内含 'z' 条目）。
+
+        ``steampipe.akamaized.net`` 固定排在首位：它是 Valve 官方 Akamai
+        入口且无需鉴权信息即可直连，实测稳定性优于 Steam API 下发的区域主机。
         """
         code = self.fetch_request_code(manifest_gid)
         if not code:
             return None
 
-        hosts = cdn_hosts if cdn_hosts is not None else self._get_cdn_hosts()
+        api_hosts = self._get_cdn_hosts()
+        # akamaized 官方入口优先，Steam API 主机随后（去重）
+        hosts = ["steampipe.akamaized.net"] + [h for h in api_hosts if h != "steampipe.akamaized.net"]
+        if cdn_hosts:
+            hosts = list(cdn_hosts)
         for host in hosts:
             url = f"https://{host}/depot/{depot_id}/manifest/{manifest_gid}/5/{code}"
             try:
