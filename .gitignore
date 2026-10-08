@@ -44,3 +44,6 @@ tools/extract_tickets/[0-9]*/
 .baseline_wt/
 _live_*.txt
 _final_pytest.txt
+
+# ZCode IDE
+.zcodeignore
