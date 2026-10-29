@@ -32,6 +32,7 @@ from typing import Any, Iterable
 from core.manifest_archive import ManifestArchive, ManifestArchiveClient
 from core.manifest_cache import ManifestCacheManager
 from core.manifest_downloader import STEAM_MANIFEST_MAGIC, ManifestDownloader
+from core import manifest_pins
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -103,11 +104,33 @@ def update_lua_manifest(
     depot_id: str,
     manifest_gid: str,
     size: int = 0,
+    *,
+    respect_pins: bool = True,
 ) -> bool:
-    """在 Lua 中更新或追加 ``setManifestid(depot, gid[, size])``（幂等）。"""
+    """在 Lua 中更新或追加 ``setManifestid(depot, gid[, size])``（幂等）。
+
+    ``respect_pins=True``（默认）时，如果该 Depot 已被用户固定，则始终写入
+    固定 GID，避免「一键补全」把用户锁定的版本覆盖掉。
+    """
     path = Path(lua_path)
     if not path.is_file():
         return False
+    app_id = manifest_pins.lua_app_id(path)
+    if respect_pins and app_id:
+        pinned = manifest_pins.pinned_gid(app_id, str(depot_id))
+        if pinned:
+            if pinned != str(manifest_gid):
+                logger.debug(
+                    "Lua %s 的 Depot %s 已固定为 %s，忽略补全得到的 %s",
+                    path.name,
+                    depot_id,
+                    pinned,
+                    manifest_gid,
+                )
+            manifest_gid = pinned
+            # 固定版本的 size 必须与固定 GID 对应；没有记录时留空，
+            # 不能拿新版本的 size 去配旧 GID。
+            size = manifest_pins.pinned_size(app_id, str(depot_id))
     try:
         content = path.read_text(encoding="utf-8", errors="replace")
         pattern = (

@@ -60,12 +60,17 @@ def test_main_window_assembles_with_manifest_page(qapp, workspace):
         assert hasattr(window, "denuvo_auth_page")
         assert window.denuvo_extract_page.objectName() == "denuvoExtractPage"
         assert window.denuvo_auth_page.objectName() == "denuvoAuthPage"
+        # 1.2.2 新增页面
+        assert window.app_lookup_page.objectName() == "appLookupPage"
+        assert window.diagnostics_page.objectName() == "diagnosticsPage"
 
         # 导航按钮都在
         assert window._manifest_nav_btn is not None
         assert window._library_nav_btn is not None
         assert window._denuvo_extract_nav_btn is not None
         assert window._denuvo_auth_nav_btn is not None
+        assert window._app_lookup_nav_btn is not None
+        assert window._diagnostics_nav_btn is not None
     finally:
         window.close()
         window.deleteLater()
@@ -85,6 +90,8 @@ def test_navigation_can_switch_to_every_page(qapp, workspace):
             window.search_page,
             window.library_page,
             window.manifest_page,
+            window.app_lookup_page,
+            window.diagnostics_page,
             window.denuvo_extract_page,
             window.denuvo_auth_page,
             window.settings_page,
@@ -92,6 +99,41 @@ def test_navigation_can_switch_to_every_page(qapp, workspace):
         for page in pages:
             window.switchTo(page)
             assert window.stackedWidget.currentWidget() is page
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_scroll_pages_have_non_zero_content(qapp, workspace):
+    """回归测试：ScrollArea 页面必须启用 setWidgetResizable，否则内容区为 0×0。
+
+    组件状态、诊断中心、Lua 规则、云存档和 AppID 查询都曾因漏掉这一行而
+    显示为整页空白（深色主题下看起来就是全黑）。
+    """
+    from core.config_manager import ConfigManager
+    from core.game_manager import LuaGameManager
+    from core.steam_bridge import SteamBridge
+    from gui.main_window import MainWindow
+
+    window = MainWindow(SteamBridge(), LuaGameManager(config_manager=ConfigManager()), ConfigManager())
+    try:
+        window.resize(1280, 820)
+        window.show()
+        qapp.processEvents()
+        pages = [
+            window.components_page,
+            window.diagnostics_page,
+            window.lua_page,
+            window.cloud_save_page,
+            window.app_lookup_page,
+        ]
+        for page in pages:
+            window.switchTo(page)
+            qapp.processEvents()
+            content = page.widget()
+            assert page.widgetResizable(), page.objectName()
+            assert content is not None, page.objectName()
+            assert content.width() > 0 and content.height() > 0, page.objectName()
     finally:
         window.close()
         window.deleteLater()

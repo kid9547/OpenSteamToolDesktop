@@ -39,10 +39,21 @@ class SaveAppInfo:
     steam_ids: list[str]
     file_count: int
     total_size: int
+    last_modified: float = 0.0
 
     @property
     def label(self) -> str:
         return f"AppID {self.app_id}（{len(self.steam_ids)} 个账号 / {self.file_count} 个文件 / {self.total_size / 1024:.0f} KB）"
+
+
+@dataclass
+class SaveAccountInfo:
+    """单个 Steam 账号的存档概况。"""
+
+    steam_id: str
+    app_count: int
+    file_count: int
+    total_size: int
 
 
 class SaveBackupError(RuntimeError):
@@ -62,14 +73,25 @@ class SaveBackupManager:
         root = self.steam_path / "userdata"
         return root if root.is_dir() else None
 
-    def list_save_apps(self) -> list[SaveAppInfo]:
-        """枚举所有账号下有 ``remote`` 存档的 AppID，按 AppID 升序。"""
+    def list_save_apps(self, steam_id: str | None = None) -> list[SaveAppInfo]:
+        """枚举所有账号（或指定账号）下有 ``remote`` 存档的 AppID。
+
+        Args:
+            steam_id: 只统计指定账号；为空时聚合全部账号。
+        """
         root = self._userdata_root()
         if root is None:
             return []
         aggregated: dict[str, dict] = {}
+        wanted_sid = str(steam_id).strip() if steam_id else ""
         try:
-            steam_ids = [d for d in root.iterdir() if d.is_dir() and d.name.isdigit()]
+            steam_ids = [
+                d
+                for d in root.iterdir()
+                if d.is_dir()
+                and d.name.isdigit()
+                and (not wanted_sid or d.name == wanted_sid)
+            ]
         except OSError:
             return []
         for sid_dir in steam_ids:
@@ -83,30 +105,95 @@ class SaveBackupManager:
                     continue
                 file_count = 0
                 total_size = 0
+                last_modified = 0.0
                 for path in remote.rglob("*"):
                     if path.is_file():
                         try:
+                            stat = path.stat()
                             file_count += 1
-                            total_size += path.stat().st_size
+                            total_size += stat.st_size
+                            last_modified = max(last_modified, stat.st_mtime)
                         except OSError:
                             continue
                 if file_count == 0:
                     continue
                 info = aggregated.setdefault(
-                    app_dir.name, {"steam_ids": [], "file_count": 0, "total_size": 0}
+                    app_dir.name,
+                    {
+                        "steam_ids": [],
+                        "file_count": 0,
+                        "total_size": 0,
+                        "last_modified": 0.0,
+                    },
                 )
                 info["steam_ids"].append(sid_dir.name)
                 info["file_count"] += file_count
                 info["total_size"] += total_size
+                info["last_modified"] = max(info["last_modified"], last_modified)
         return [
             SaveAppInfo(
                 app_id=app_id,
                 steam_ids=meta["steam_ids"],
                 file_count=meta["file_count"],
                 total_size=meta["total_size"],
+                last_modified=meta["last_modified"],
             )
             for app_id, meta in sorted(aggregated.items(), key=lambda kv: int(kv[0]))
         ]
+
+    def list_accounts(self) -> list[SaveAccountInfo]:
+        """枚举 ``userdata`` 下每个账号的存档概况。"""
+        root = self._userdata_root()
+        if root is None:
+            return []
+        accounts: list[SaveAccountInfo] = []
+        try:
+            sid_dirs = [d for d in root.iterdir() if d.is_dir() and d.name.isdigit()]
+        except OSError:
+            return []
+        for sid_dir in sid_dirs:
+            app_count = 0
+            file_count = 0
+            total_size = 0
+            try:
+                app_dirs = [d for d in sid_dir.iterdir() if d.is_dir() and d.name.isdigit()]
+            except OSError:
+                continue
+            for app_dir in app_dirs:
+                remote = app_dir / "remote"
+                if not remote.is_dir():
+                    continue
+                found = 0
+                size = 0
+                for path in remote.rglob("*"):
+                    if path.is_file():
+                        try:
+                            found += 1
+                            size += path.stat().st_size
+                        except OSError:
+                            continue
+                if found:
+                    app_count += 1
+                    file_count += found
+                    total_size += size
+            if app_count:
+                accounts.append(
+                    SaveAccountInfo(
+                        steam_id=sid_dir.name,
+                        app_count=app_count,
+                        file_count=file_count,
+                        total_size=total_size,
+                    )
+                )
+        return sorted(accounts, key=lambda item: int(item.steam_id))
+
+    def save_dir(self, steam_id: str, app_id: str) -> Path | None:
+        """返回指定账号/游戏的 ``remote`` 存档目录（不存在时返回 None）。"""
+        root = self._userdata_root()
+        if root is None:
+            return None
+        target = root / str(steam_id) / str(app_id) / "remote"
+        return target if target.is_dir() else None
 
     # ── 备份 / 恢复 ───────────────────────────────────────
     def backup(self, app_ids: list[str], dest_dir: str | Path) -> Path:

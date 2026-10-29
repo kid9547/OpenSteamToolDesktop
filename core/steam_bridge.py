@@ -49,29 +49,44 @@ class SteamBridge:
         """从 DLLManager 获取 DLL 路径并更新注入器
 
         优先级：
-        1. DLLManager 管理的路径（用户下载的最新版本）
+        1. DLLManager 管理的当前内核（ZSteamTool v1.2.x）
         2. 内置的 resources/fallback_dlls 目录
+        3. 旧版 OpenSteam001 内核（仅在内置文件缺失时兜底）
         """
         dll_path = self._dll_manager.get_dll_path()
         if dll_path is not None and dll_path.exists() and dll_path != Path():
             self._dll_source_dir = str(dll_path)
             self._injector.set_dll_source_dir(self._dll_source_dir)
             logger.info(f"Using DLLManager path: {self._dll_source_dir}")
-        else:
-            # 回退：使用内置的 resources/fallback_dlls 目录
-            fallback_path = self._get_default_dll_source_dir()
-            if fallback_path and os.path.isdir(fallback_path):
-                # 验证 fallback 目录是否包含所需的 DLL
-                if self._check_fallback_dlls(fallback_path):
-                    self._dll_source_dir = fallback_path
-                    self._injector.set_dll_source_dir(self._dll_source_dir)
-                    logger.info(f"Using fallback DLL path: {self._dll_source_dir}")
-                else:
-                    logger.error(f"Fallback DLL path missing required DLLs: {fallback_path}")
-                    self._dll_source_dir = ""
-            else:
-                logger.warning(f"No valid DLL path found, fallback path not found: {fallback_path}")
-                self._dll_source_dir = ""
+            return
+
+        if self._dll_manager.is_legacy_kernel():
+            logger.warning(
+                "检测到旧版 OpenSteam001 内核（上游已停更），优先改用内置 ZSteamTool 内核"
+            )
+
+        # 回退：使用内置的 resources/fallback_dlls 目录
+        fallback_path = self._get_default_dll_source_dir()
+        if fallback_path and os.path.isdir(fallback_path):
+            # 验证 fallback 目录是否包含所需的 DLL
+            if self._check_fallback_dlls(fallback_path):
+                self._dll_source_dir = fallback_path
+                self._injector.set_dll_source_dir(self._dll_source_dir)
+                logger.info(f"Using fallback DLL path: {self._dll_source_dir}")
+                return
+
+            logger.error(f"Fallback DLL path missing required DLLs: {fallback_path}")
+
+        # 最后兜底：内置文件缺失时仍允许使用旧版内核
+        legacy_path = self._dll_manager.get_dll_path(include_legacy=True)
+        if legacy_path is not None and legacy_path.exists() and legacy_path != Path():
+            self._dll_source_dir = str(legacy_path)
+            self._injector.set_dll_source_dir(self._dll_source_dir)
+            logger.warning(f"Using legacy kernel path as last resort: {self._dll_source_dir}")
+            return
+
+        logger.warning(f"No valid DLL path found, fallback path not found: {fallback_path}")
+        self._dll_source_dir = ""
 
     def _check_fallback_dlls(self, fallback_path: str) -> bool:
         """检查 fallback 目录是否包含所需的 DLL 文件"""
@@ -121,7 +136,7 @@ class SteamBridge:
         result = self._detector.detect()
         if result.status == SteamStatus.INSTALLED:
             self._steam_path = result.path
-            self._lua_dir = os.path.join(result.path, "config", "lua")
+            self._lua_dir = self.get_default_lua_dir()
             self._injector.set_steam_path(result.path)
             logger.info(f"Steam path: {result.path}")
             logger.debug(f"Lua directory: {self._lua_dir}")
@@ -292,13 +307,53 @@ class SteamBridge:
         return os.path.join(self._steam_path, "config", "lua")
 
     def get_lua_dir(self) -> str:
-        """获取当前使用的 Lua 配置目录（优先使用存在的 stplug-in，否则回退 config/lua）"""
+        """获取当前使用的 Lua 配置目录（优先 config/lua，兼容旧版 stplug-in）"""
         if self._steam_path:
-            stplugin = os.path.join(self._steam_path, "config", "stplug-in")
-            if os.path.isdir(stplugin):
-                return stplugin
-            return os.path.join(self._steam_path, "config", "lua")
+            modern = os.path.join(self._steam_path, "config", "lua")
+            if os.path.isdir(modern):
+                return modern
+            legacy = os.path.join(self._steam_path, "config", "stplug-in")
+            if os.path.isdir(legacy):
+                return legacy
+            return modern
         return self._lua_dir or ""
+
+    def get_lua_dirs(self) -> list[str]:
+        """获取内核会扫描的全部 Lua 目录（现代目录在前，旧目录在后）"""
+        if not self._steam_path:
+            return []
+        return [
+            os.path.join(self._steam_path, "config", "lua"),
+            os.path.join(self._steam_path, "config", "stplug-in"),
+        ]
+
+    # ── 内核 opensteamtool.toml 读写（设置页 / D 加密页使用）──────
+
+    def get_kernel_config(self, section: str, key: str, default=None):
+        """读取 ``<Steam>/opensteamtool.toml`` 中的一项。"""
+        steam = self.get_steam_path()
+        if not steam:
+            return default
+        from core.opensteamtool_config import get_value
+
+        return get_value(steam, section, key, default)
+
+    def update_kernel_config(self, updates: dict[str, dict]) -> tuple[bool, str]:
+        """写入内核配置（保留其它用户设置）。"""
+        steam = self.get_steam_path()
+        if not steam:
+            return False, "Steam 目录未找到"
+        from core.opensteamtool_config import update_config
+
+        return update_config(steam, updates)
+
+    def get_cloud_redirect_path(self) -> str:
+        """返回云存档重定向 DLL 的预期路径（用户自行放置）。"""
+        steam = self.get_steam_path()
+        if not steam:
+            return ""
+        library = str(self.get_kernel_config("cloud", "library", "cloud_redirect.dll") or "cloud_redirect.dll")
+        return os.path.join(steam, library)
 
     def redetect_steam(self):
         """重新检测 Steam"""

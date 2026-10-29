@@ -16,6 +16,16 @@ from core.credential_store import TicketBundle  # noqa: E402
 from core.game_manager import LuaGameManager  # noqa: E402
 
 
+def _valid_app_ticket(app_id: str) -> str:
+    """构造结构合法的假 AppTicket（20 字节，内嵌 SteamID 与 AppID）。"""
+    import struct
+
+    steam_id = 76561198028121353
+    return (
+        struct.pack("<IIQ", 20, 2, steam_id) + struct.pack("<I", int(app_id))
+    ).hex()
+
+
 @pytest.fixture()
 def manager(tmp_path):
     lua_dir = tmp_path / "config" / "lua"
@@ -109,14 +119,15 @@ def test_dialog_apply_writes_lua_when_registry_unavailable(qapp, manager, monkey
 
     dialog = DenuvoTicketDialog(manager, "1361510")
     try:
-        dialog._bundle = TicketBundle(app_id="1361510", app_ticket="aabb", eticket="ccdd")
+        ticket = _valid_app_ticket("1361510")
+        dialog._bundle = TicketBundle(app_id="1361510", app_ticket=ticket, eticket="ccdd")
         dialog._restart_check.setChecked(False)
         dialog._on_apply()
 
         content = (manager.get_lua_dir() and open(
             os.path.join(manager.get_lua_dir(), "1361510.lua"), encoding="utf-8"
         ).read())
-        assert 'setAppTicket(1361510, "aabb")' in content
+        assert f'setAppTicket(1361510, "{ticket}")' in content
         assert 'setETicket(1361510, "ccdd")' in content
         assert "registry unavailable" in dialog._log.toPlainText()
     finally:

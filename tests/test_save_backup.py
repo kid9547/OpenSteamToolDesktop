@@ -75,3 +75,34 @@ def test_restore_rejects_bad_zip(tmp_path):
     (tmp_path / "steam" / "userdata").mkdir(parents=True)
     with pytest.raises(SaveBackupError):
         manager.restore(bad)
+
+
+def test_list_save_apps_filters_by_account(steam_tree):
+    manager = SaveBackupManager(str(steam_tree))
+
+    apps = manager.list_save_apps(steam_id="1111111")
+
+    assert [app.app_id for app in apps] == ["500"]
+    assert apps[0].steam_ids == ["1111111"]
+    assert apps[0].last_modified > 0
+
+
+def test_list_accounts_aggregates_saves(steam_tree):
+    accounts = SaveBackupManager(str(steam_tree)).list_accounts()
+
+    by_id = {account.steam_id: account for account in accounts}
+    assert set(by_id) == {"1111111", "2222222"}
+    assert by_id["1111111"].app_count == 1
+    assert by_id["1111111"].file_count == 2
+    assert by_id["2222222"].file_count == 1
+
+
+def test_save_dir_returns_existing_remote(steam_tree):
+    manager = SaveBackupManager(str(steam_tree))
+
+    path = manager.save_dir("1111111", "500")
+
+    assert path is not None
+    assert path.name == "remote"
+    assert (path / "save" / "slot1.dat").is_file()
+    assert manager.save_dir("1111111", "999") is None

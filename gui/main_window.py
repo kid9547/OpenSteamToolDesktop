@@ -66,6 +66,11 @@ class MainWindow(MSFluentWindow):
         from gui.search_page import SearchPage
         from gui.library_page import LibraryPage
         from gui.manifest_page import ManifestPage
+        from gui.lua_page import LuaRulesPage
+        from gui.cloud_save_page import CloudSavePage
+        from gui.components_page import ComponentsPage
+        from gui.app_lookup_page import AppLookupPage
+        from gui.diagnostics_page import DiagnosticsPage
         from gui.denuvo_page import DenuvoAuthPage, DenuvoExtractPage
         from gui.settings_page import SettingsPage
         from config import ENABLE_ACCELERATOR_PAGE
@@ -92,6 +97,18 @@ class MainWindow(MSFluentWindow):
         # 清单变动后刷新游戏库的清单就绪状态
         self.manifest_page.manifests_changed.connect(self.library_page._load_games_async)
 
+        self.lua_page = LuaRulesPage(bridge, game_manager=game_manager, parent=self)
+        self.lua_page.rules_changed.connect(self.library_page._load_games_async)
+
+        self.cloud_save_page = CloudSavePage(
+            bridge, game_manager=game_manager, parent=self
+        )
+
+        self.components_page = ComponentsPage(bridge, parent=self)
+
+        self.app_lookup_page = AppLookupPage(bridge, parent=self)
+        self.diagnostics_page = DiagnosticsPage(bridge, parent=self)
+
         # D 加密：提取 / 授权 两个独立页面
         self.denuvo_extract_page = DenuvoExtractPage(game_manager, bridge=bridge, parent=self)
         self.denuvo_auth_page = DenuvoAuthPage(game_manager, bridge=bridge, parent=self)
@@ -105,6 +122,9 @@ class MainWindow(MSFluentWindow):
             parent=self,
         )
         self.settings_page.scan_requested.connect(self.library_page._load_games_async)
+        self.cloud_save_page.settings_requested.connect(
+            lambda: self.switchTo(self.settings_page)
+        )
 
         if ENABLE_ACCELERATOR_PAGE:
             from gui.accelerate_page import AcceleratePage
@@ -127,9 +147,20 @@ class MainWindow(MSFluentWindow):
         # 页面导航
         self._home_nav_btn = self.addSubInterface(self.home_page, FluentIcon.HOME, "首页")
         self._inject_nav_btn = self.addSubInterface(self.inject_page, FluentIcon.DOWNLOAD, "注入管理")
+        self._components_nav_btn = self.addSubInterface(
+            self.components_page, FluentIcon.IOT, "组件状态"
+        )
+        self._app_lookup_nav_btn = self.addSubInterface(
+            self.app_lookup_page, FluentIcon.APPLICATION, "AppID 查询"
+        )
+        self._diagnostics_nav_btn = self.addSubInterface(
+            self.diagnostics_page, FluentIcon.DEVELOPER_TOOLS, "诊断中心"
+        )
         self._search_nav_btn = self.addSubInterface(self.search_page, FluentIcon.SEARCH, "搜索入库")
         self._library_nav_btn = self.addSubInterface(self.library_page, FluentIcon.LIBRARY, "游戏库")
         self._manifest_nav_btn = self.addSubInterface(self.manifest_page, FluentIcon.ZIP_FOLDER, "清单管理")
+        self._lua_nav_btn = self.addSubInterface(self.lua_page, FluentIcon.CODE, "Lua 规则")
+        self._cloud_nav_btn = self.addSubInterface(self.cloud_save_page, FluentIcon.CLOUD, "云存档")
         self._denuvo_extract_nav_btn = self.addSubInterface(self.denuvo_extract_page, FluentIcon.CERTIFICATE, "D加密提取")
         self._denuvo_auth_nav_btn = self.addSubInterface(self.denuvo_auth_page, FluentIcon.ACCEPT, "D加密授权")
         if self.accelerate_page:
@@ -444,6 +475,11 @@ class MainWindow(MSFluentWindow):
             "search": self.search_page,
             "library": self.library_page,
             "manifest": self.manifest_page,
+            "lua": self.lua_page,
+            "cloud": self.cloud_save_page,
+            "components": self.components_page,
+            "app_lookup": self.app_lookup_page,
+            "diagnostics": self.diagnostics_page,
             "denuvo_extract": self.denuvo_extract_page,
             "denuvo_auth": self.denuvo_auth_page,
         }
@@ -460,6 +496,11 @@ class MainWindow(MSFluentWindow):
             "search": self.search_page,
             "library": self.library_page,
             "manifest": self.manifest_page,
+            "lua": self.lua_page,
+            "cloud": self.cloud_save_page,
+            "components": self.components_page,
+            "app_lookup": self.app_lookup_page,
+            "diagnostics": self.diagnostics_page,
             "denuvo_extract": self.denuvo_extract_page,
             "denuvo_auth": self.denuvo_auth_page,
         }
@@ -550,7 +591,9 @@ class MainWindow(MSFluentWindow):
     def notify_theme_changed(self):
         pages = [
             self.home_page, self.inject_page, self.search_page, self.library_page,
-            self.manifest_page, self.denuvo_extract_page, self.denuvo_auth_page,
+            self.manifest_page, self.lua_page, self.cloud_save_page,
+            self.components_page, self.app_lookup_page, self.diagnostics_page,
+            self.denuvo_extract_page, self.denuvo_auth_page,
         ]
         for page in pages:
             if hasattr(page, "notify_theme_changed"):
@@ -581,7 +624,9 @@ class MainWindow(MSFluentWindow):
         """清理所有页面的后台线程和资源"""
         pages = [
             self.home_page, self.inject_page, self.search_page, self.library_page,
-            self.manifest_page, self.denuvo_extract_page, self.denuvo_auth_page,
+            self.manifest_page, self.lua_page, self.cloud_save_page,
+            self.components_page, self.app_lookup_page, self.diagnostics_page,
+            self.denuvo_extract_page, self.denuvo_auth_page,
         ]
 
         # 1. 停止定时器
@@ -605,6 +650,14 @@ class MainWindow(MSFluentWindow):
             try:
                 if hasattr(page, 'wait_for_workers'):
                     page.wait_for_workers()
+            except Exception:
+                pass
+
+        # 3.1 停止新增页面（Lua 规则 / 云存档）持有的异步线程
+        for page in pages:
+            try:
+                if hasattr(page, 'shutdown'):
+                    page.shutdown()
             except Exception:
                 pass
 

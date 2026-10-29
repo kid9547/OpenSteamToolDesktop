@@ -54,6 +54,46 @@ def clean():
     print("Clean complete.")
 
 
+def _copy_extra_resources(target_root: Path):
+    """Ensure bundled patterns and the ticket extractor exist in PyInstaller dist."""
+    patterns_src = PROJECT_ROOT / "resources" / "steam_patterns"
+    patterns_dst = target_root / "resources" / "steam_patterns"
+    if patterns_src.is_dir():
+        if patterns_dst.exists():
+            shutil.rmtree(patterns_dst)
+        shutil.copytree(patterns_src, patterns_dst)
+        print(f"Copied resources/steam_patterns -> {patterns_dst}")
+    else:
+        print(f"Warning: {patterns_src} not found, Steam signatures not bundled!")
+
+    extractor_src = PROJECT_ROOT / "tools" / "extract_tickets" / "extract_tickets.exe"
+    extractor_dst = target_root / "tools" / "extract_tickets" / "extract_tickets.exe"
+    if extractor_src.is_file():
+        extractor_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(extractor_src, extractor_dst)
+        print(f"Copied extract_tickets.exe -> {extractor_dst}")
+    else:
+        print(f"Warning: {extractor_src} not found, Denuvo extractor not bundled!")
+
+    # PyInstaller 的依赖扫描会把 resources/fallback_dlls/dwmapi.dll 误判为
+    # Qt 依赖，并在 _internal 根目录再放一份 DWMAPI.dll。那份副本会让本程序
+    # 自己加载注入代理，必须删除；真正需要的副本保留在 resources/fallback_dlls。
+    for candidate in target_root.glob("DWMAPI.dll"):
+        try:
+            candidate.unlink()
+            print(f"Removed conflicting runtime copy: {candidate}")
+        except OSError as exc:
+            print(f"Warning: failed to remove {candidate}: {exc}")
+    for candidate in target_root.glob("dwmapi.dll"):
+        # 仅删除 _internal 根目录这一份，resources/fallback_dlls 下的不动。
+        if candidate.parent == target_root:
+            try:
+                candidate.unlink()
+                print(f"Removed conflicting runtime copy: {candidate}")
+            except OSError as exc:
+                print(f"Warning: failed to remove {candidate}: {exc}")
+
+
 def build_pyinstaller(*, no_zip: bool = False):
     """执行 PyInstaller 打包"""
     if not SPEC_FILE.exists():
@@ -95,6 +135,8 @@ def build_pyinstaller(*, no_zip: bool = False):
     else:
         print(f"\nWarning: {dll_src} not found, DLLs not bundled!")
 
+    _copy_extra_resources(DIST_DIR / "OpenSteamToolDesktop" / "_internal")
+
     size_mb = exe_path.stat().st_size / (1024 * 1024)
     print(f"\nBuild successful!")
     print(f"Output: {exe_path}  ({size_mb:.1f} MB)")
@@ -110,6 +152,7 @@ def build_nuitka(*, no_zip: bool = False):
     print("=" * 60)
 
     icon_arg = f"--windows-icon-from-ico={ICON_PATH}" if ICON_PATH.exists() else ""
+    win_version = _windows_version()
 
     cmd = [
         sys.executable, "-m", "nuitka",
@@ -117,6 +160,8 @@ def build_nuitka(*, no_zip: bool = False):
         "--enable-plugin=pyqt6",
         "--windows-console-mode=disable",
         f"--include-data-dir={PROJECT_ROOT / 'resources/fallback_dlls'}=resources/fallback_dlls",
+        f"--include-data-dir={PROJECT_ROOT / 'resources/steam_patterns'}=resources/steam_patterns",
+        f"--include-data-files={PROJECT_ROOT / 'tools/extract_tickets/extract_tickets.exe'}=tools/extract_tickets/extract_tickets.exe",
         f"--include-data-dir={PROJECT_ROOT / 'assets'}=assets",
         f"--include-data-files={PROJECT_ROOT / 'resources/fallback_dlls' / 'OpenSteamTool.dll'}=resources/fallback_dlls/OpenSteamTool.dll",
         f"--include-data-files={PROJECT_ROOT / 'resources/fallback_dlls' / 'dwmapi.dll'}=resources/fallback_dlls/dwmapi.dll",
@@ -125,8 +170,8 @@ def build_nuitka(*, no_zip: bool = False):
         f"--output-dir={DIST_DIR}",
         "--company-name=OpenSteamToolDesktop",
         "--product-name=OpenSteamToolDesktop",
-        "--file-version=1.0.0",
-        "--product-version=1.0.0",
+        f"--file-version={win_version}",
+        f"--product-version={win_version}",
         "--file-description=OpenSteamToolDesktop Application",
         "--assume-yes-for-downloads",
         "--nofollow-import-to=tests",
@@ -170,6 +215,15 @@ def get_version() -> str:
                 val = line.split("=", 1)[-1].strip().strip("\"'")
                 return val
     return "unknown"
+
+
+def _windows_version() -> str:
+    """Windows 文件版本资源必须是 4 段数字（例如 1.2.0.0）。"""
+    version = get_version().lstrip("vV")
+    parts = [part for part in version.split(".") if part.isdigit()]
+    while len(parts) < 4:
+        parts.append("0")
+    return ".".join(parts[:4])
 
 
 def zip_dist():

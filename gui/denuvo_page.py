@@ -45,6 +45,7 @@ from qfluentwidgets import (
     PushButton,
     ScrollArea,
     StrongBodyLabel,
+    SwitchButton,
 )
 
 from core import credential_store, ticket_service
@@ -264,7 +265,7 @@ class _DenuvoPageBase(ScrollArea):
         if not ticket_service.extractor_available():
             lines.append("❌ 缺少提取工具 tools/extract_tickets/extract_tickets.exe")
         if self._bundle is not None:
-            problems = self._bundle.validate()
+            problems = self._bundle.validate(require_eticket=True)
             lines.append(
                 "🧾 待写入票据："
                 + f"AppTicket {_human_bytes(len(self._bundle.app_ticket))}"
@@ -408,7 +409,7 @@ class DenuvoExtractPage(_DenuvoPageBase):
             f"ETicket={_human_bytes(len(bundle.eticket))} "
             f"SteamID={bundle.derived_steam_id or '-'}"
         )
-        problems = bundle.validate()
+        problems = bundle.validate(require_eticket=True)
         if problems:
             self._append_log("校验告警：" + "；".join(problems))
         else:
@@ -449,6 +450,7 @@ class DenuvoAuthPage(_DenuvoPageBase):
         )
 
         self._build_appid_row("目标游戏 AppID（票据将写入该游戏）")
+        self._build_kernel_options_card()
 
         # ── 来源区 ──
         source_card = CardWidget(self._container)
@@ -542,6 +544,144 @@ class DenuvoAuthPage(_DenuvoPageBase):
         self._build_log()
         self.setAcceptDrops(True)
 
+    # ── 内核兼容 / 账号覆盖 ────────────────────────────────
+    def _build_kernel_options_card(self) -> None:
+        card = CardWidget(self._container)
+        box = QVBoxLayout(card)
+        box.setContentsMargins(16, 12, 16, 12)
+        box.setSpacing(8)
+
+        title = StrongBodyLabel("内核兼容与账号覆盖", card)
+        title.setStyleSheet("font-size: 13px;")
+        box.addWidget(title)
+
+        hint = BodyLabel(
+            "ZSteamTool v1.2.x 提供 [denuvo] mode 与 setStat()。normal 模式只在 D 加密授权握手期间"
+            "使用票据账号，其余时间按你当前登录的账号运行，存档/云存档仍绑定你自己的账号；"
+            "只有游戏反复报授权错误（如 012 / 88500012）时才需要切到 compat。"
+            "配置改动会热重载，保存后立即生效，无需重启 Steam。",
+            card,
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        box.addWidget(hint)
+
+        mode_row = QHBoxLayout()
+        mode_box = QVBoxLayout()
+        mode_title = BodyLabel("D 加密模式（[denuvo] mode）", card)
+        mode_sub = BodyLabel(
+            "normal = 仅授权握手用票据身份，存档绑定当前账号（推荐）；"
+            "compat = 整场使用票据账号，存档会绑定出票账号，仅在必要时使用",
+            card,
+        )
+        mode_sub.setStyleSheet("color: #888; font-size: 11px;")
+        mode_box.addWidget(mode_title)
+        mode_box.addWidget(mode_sub)
+        self._compat_switch = SwitchButton(card)
+        self._compat_switch.setOnText("兼容")
+        self._compat_switch.setOffText("标准")
+        self._compat_switch.checkedChanged.connect(self._on_denuvo_mode_changed)
+        mode_row.addLayout(mode_box, 1)
+        mode_row.addWidget(self._compat_switch)
+        box.addLayout(mode_row)
+
+        steamid_row = QHBoxLayout()
+        self._steamid_edit = QLineEdit(card)
+        self._steamid_edit.setPlaceholderText("可选：SteamID64 / 32 位账号 ID，用于 setStat() 身份覆盖")
+        self._steamid_edit.setClearButtonEnabled(True)
+        steamid_row.addWidget(self._steamid_edit, 1)
+
+        apply_sid = PushButton("写入 SteamID", card)
+        apply_sid.clicked.connect(self._on_apply_steam_id)
+        steamid_row.addWidget(apply_sid)
+
+        clear_sid = PushButton("清除覆盖", card)
+        clear_sid.clicked.connect(self._on_clear_steam_id)
+        steamid_row.addWidget(clear_sid)
+        box.addLayout(steamid_row)
+
+        self._kernel_status_label = BodyLabel("", card)
+        self._kernel_status_label.setWordWrap(True)
+        self._kernel_status_label.setStyleSheet("color: #888; font-size: 11px;")
+        box.addWidget(self._kernel_status_label)
+
+        self._layout.addWidget(card)
+
+    def _refresh_kernel_options(self) -> None:
+        bridge = self._resolve_bridge()
+        mode = "normal"
+        if bridge is not None:
+            try:
+                mode = str(bridge.get_kernel_config("denuvo", "mode", "normal") or "normal").lower()
+            except Exception:  # noqa: BLE001
+                mode = "normal"
+        self._compat_switch.blockSignals(True)
+        self._compat_switch.setChecked(mode == "compat")
+        self._compat_switch.blockSignals(False)
+
+        app_id = self._current_app_id()
+        has_lua_sid = False
+        if app_id:
+            try:
+                has_lua_sid = bool(self._game_manager.ticket_status_from_lua(app_id).get("has_steam_id"))
+            except Exception:  # noqa: BLE001
+                pass
+        active = ""
+        try:
+            active = credential_store.active_steam_id()
+        except Exception:  # noqa: BLE001
+            pass
+        parts = [f"当前模式：{'compat（兼容）' if mode == 'compat' else 'normal（标准）'}"]
+        parts.append(f"Lua setStat 覆盖：{'已写入' if has_lua_sid else '未写入'}")
+        if active:
+            parts.append(f"当前登录 SteamID：{active}")
+        self._kernel_status_label.setText("　|　".join(parts))
+
+    def _on_denuvo_mode_changed(self, checked: bool) -> None:
+        bridge = self._resolve_bridge()
+        if bridge is None:
+            self._append_log("无法切换 D 加密模式：未获取到 Steam 桥接对象")
+            return
+        mode = "compat" if checked else "normal"
+        ok, message = bridge.update_kernel_config({"denuvo": {"mode": mode}})
+        if ok:
+            self._append_log(f"已切换 D 加密模式为 {mode}，配置已热重载并立即生效")
+        else:
+            self._append_log(f"切换 D 加密模式失败：{message}")
+        self._refresh_kernel_options()
+
+    def _on_apply_steam_id(self) -> None:
+        app_id = self._current_app_id()
+        if not app_id.isdigit():
+            InfoBar.warning("请输入 AppID", "先输入要覆盖身份的游戏 AppID", parent=self, position=InfoBarPosition.TOP)
+            return
+        raw = self._steamid_edit.text().strip()
+        steam_id = credential_store.normalize_steam_id(raw)
+        if not steam_id:
+            InfoBar.warning("SteamID 无效", "请输入十进制 SteamID64 或 32 位账号 ID", parent=self, position=InfoBarPosition.TOP)
+            return
+        try:
+            path = self._game_manager.update_steam_id(app_id, steam_id)
+        except (ValueError, OSError) as exc:
+            self._append_log(f"写入 SteamID 失败：{exc}")
+            return
+        self._append_log(f"已写入 setStat({app_id}, \"{steam_id}\")：{os.path.basename(path)}")
+        self._refresh_kernel_options()
+
+    def _on_clear_steam_id(self) -> None:
+        app_id = self._current_app_id()
+        if not app_id.isdigit():
+            InfoBar.warning("请输入 AppID", "先输入要清除身份覆盖的游戏 AppID", parent=self, position=InfoBarPosition.TOP)
+            return
+        try:
+            path = self._game_manager.update_steam_id(app_id, "")
+        except (ValueError, OSError) as exc:
+            self._append_log(f"清除 SteamID 覆盖失败：{exc}")
+            return
+        self._steamid_edit.clear()
+        self._append_log(f"已清除 setStat 覆盖：{os.path.basename(path)}")
+        self._refresh_kernel_options()
+
     # ── 拖放 ──────────────────────────────────────────────
     def dragEnterEvent(self, event):  # noqa: N802 - Qt 接口
         if event.mimeData().hasUrls():
@@ -555,6 +695,7 @@ class DenuvoAuthPage(_DenuvoPageBase):
     def showEvent(self, event):  # noqa: N802 - Qt 接口
         super().showEvent(event)
         self._refresh()
+        self._refresh_kernel_options()
 
     # ── 来源动作 ──────────────────────────────────────────
     def _on_pick_files(self) -> None:
@@ -648,7 +789,7 @@ class DenuvoAuthPage(_DenuvoPageBase):
 
     def _accept_bundle(self, bundle: TicketBundle, source: str) -> None:
         self._bundle = bundle
-        problems = bundle.validate()
+        problems = bundle.validate(require_eticket=True)
         self._append_log(
             f"[{source}] AppID={bundle.app_id} "
             f"AppTicket={_human_bytes(len(bundle.app_ticket))} "
@@ -672,7 +813,7 @@ class DenuvoAuthPage(_DenuvoPageBase):
             self._append_log("请先输入目标 AppID")
             return
         bundle = self._bundle
-        problems = bundle.validate()
+        problems = bundle.validate(require_eticket=True)
         if problems:
             self._append_log("票据校验未通过，已中止：" + "；".join(problems))
             return

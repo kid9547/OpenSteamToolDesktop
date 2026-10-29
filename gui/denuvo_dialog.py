@@ -282,7 +282,7 @@ class DenuvoTicketDialog(QDialog):
             parts.append(f"凭据存储：不可用（{report.get('error')}）")
 
         if self._bundle:
-            problems = self._bundle.validate()
+            problems = self._bundle.validate(require_eticket=True)
             parts.append(
                 "待写入："
                 + ("校验通过" if not problems else "存在问题：" + "；".join(problems))
@@ -345,7 +345,7 @@ class DenuvoTicketDialog(QDialog):
 
     def _accept_bundle(self, bundle: TicketBundle, source: str) -> None:
         self._bundle = bundle
-        problems = bundle.validate()
+        problems = bundle.validate(require_eticket=True)
         detail = (
             f"[{source}] AppID={bundle.app_id} "
             f"AppTicket={len(bundle.app_ticket) // 2}B "
@@ -384,7 +384,7 @@ class DenuvoTicketDialog(QDialog):
             self._append_log("请先导入或提取票据")
             return
         bundle = self._bundle
-        problems = bundle.validate()
+        problems = bundle.validate(require_eticket=True)
         if problems:
             self._append_log("票据校验未通过，已中止：" + "；".join(problems))
             return

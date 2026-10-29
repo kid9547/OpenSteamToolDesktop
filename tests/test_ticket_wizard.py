@@ -16,6 +16,16 @@ from core.credential_store import TicketBundle  # noqa: E402
 from core.game_manager import LuaGameManager  # noqa: E402
 
 
+def _valid_app_ticket(app_id: str) -> str:
+    """构造结构合法的假 AppTicket（20 字节，内嵌 SteamID 与 AppID）。"""
+    import struct
+
+    steam_id = 76561198028121353
+    return (
+        struct.pack("<IIQ", 20, 2, steam_id) + struct.pack("<I", int(app_id))
+    ).hex()
+
+
 class _StubBridge:
     def __init__(self, running: bool = False):
         self._running = running
@@ -94,13 +104,14 @@ def test_wizard_apply_writes_lua_and_vault(qapp, manager, monkeypatch, tmp_path)
 
     dialog = TicketWizardDialog(manager, "1361510", steam_bridge=_StubBridge(False))
     try:
-        dialog._bundle = TicketBundle(app_id="1361510", app_ticket="aabb", eticket="ccdd")
+        ticket = _valid_app_ticket("1361510")
+        dialog._bundle = TicketBundle(app_id="1361510", app_ticket=ticket, eticket="ccdd")
         dialog._on_apply()
 
         content = open(
             os.path.join(manager.get_lua_dir(), "1361510.lua"), encoding="utf-8"
         ).read()
-        assert 'setAppTicket(1361510, "aabb")' in content
+        assert f'setAppTicket(1361510, "{ticket}")' in content
         assert 'setETicket(1361510, "ccdd")' in content
         assert stored.get("app_id") == "1361510"
         assert "已完成" in dialog._status.text()

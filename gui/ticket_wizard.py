@@ -210,7 +210,7 @@ class TicketWizardDialog(QDialog):
 
         if self._bundle is not None:
             done[2] = True
-            problems = self._bundle.validate()
+            problems = self._bundle.validate(require_eticket=True)
             lines.append(
                 "🧾 已提取：" + ("校验通过" if not problems else "存在问题：" + "；".join(problems))
             )
@@ -279,7 +279,7 @@ class TicketWizardDialog(QDialog):
     def _on_apply(self) -> None:
         if self._bundle is None:
             return
-        problems = self._bundle.validate()
+        problems = self._bundle.validate(require_eticket=True)
         if problems:
             self._status.setText("票据校验未通过：" + "；".join(problems))
             return

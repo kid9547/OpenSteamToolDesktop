@@ -687,6 +687,7 @@ def game_manifest_view(
                 {
                     "app_id": app_id,
                     "name": resolved_names.get(app_id, f"AppID {app_id}"),
+                    "lua_path": str(lua_path),
                     "declared": audit.declared if audit else 0,
                     "present": audit.present if audit else 0,
                     "missing": len(audit.missing) if audit else 0,

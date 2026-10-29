@@ -12,7 +12,7 @@ from pathlib import Path
 
 # ============ 应用信息 ============
 APP_NAME: str = "OpenSteamToolDesktop"
-APP_VERSION: str = "1.1.0"
+APP_VERSION: str = "1.2.3"
 
 # ============ 功能模块开关 ============
 # 科学加速页面开关（默认关闭；可通过环境变量 ENABLE_ACCELERATOR=1 或构建参数 --with-accelerator 开启）
@@ -32,9 +32,16 @@ GITHUB_ISSUES_URL: str = f"{GITHUB_REPO_URL}/issues/new"
 GITHUB_API_LATEST_RELEASE: str = f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases/latest"
 GITHUB_API_LATEST: str = GITHUB_API_LATEST_RELEASE  # 别名
 
-# ============ OpenSteamTool 仓库（DLL 发布位置）============
-OPENSTEAMTOOL_REPO_URL: str = "https://github.com/OpenSteam001/OpenSteamTool"
-OPENSTEAMTOOL_RELEASES_URL: str = "https://github.com/OpenSteam001/OpenSteamTool/releases"
+# ============ OpenSteamTool 内核仓库（DLL 发布位置）============
+# 上游 OpenSteam001/OpenSteamTool 已停止跟进新版 Steam。当前维护中的内核：
+#   hazjy/ZSteamTool v1.2.1 — 支持 [denuvo] mode、seteticketurl、onlinefix、
+#   setStat、manifest.lua、当前 Steam 的 pattern/IPC 自动生成与缓存。
+OPENSTEAMTOOL_REPO_URL: str = "https://github.com/hazjy/ZSteamTool"
+OPENSTEAMTOOL_RELEASES_URL: str = f"{OPENSTEAMTOOL_REPO_URL}/releases"
+OPENSTEAMTOOL_KERNEL_REPO: str = "hazjy/ZSteamTool"
+OPENSTEAMTOOL_KERNEL_VERSION: str = "v1.2.1"
+OPENSTEAMTOOL_API_LATEST: str = "https://api.github.com/repos/hazjy/ZSteamTool/releases/latest"
+OPENSTEAMTOOL_API_TAG: str = "https://api.github.com/repos/hazjy/ZSteamTool/releases/tags/{tag}"
 
 # ============ Steam 下载 ============
 STEAM_DOWNLOAD_URL: str = "https://store.steampowered.com/about/"
@@ -49,21 +56,24 @@ STEAM_CDN_API: str = (
     "GetServersForSteamPipe/v1/?cell_id=33&max_servers=30"
 )
 STEAM_MONITOR_PATTERN_RAW: str = (
-    "https://raw.githubusercontent.com/OpenSteam001/steam-monitor/"
-    "pattern/{component}/{sha256}.toml"
+    "https://raw.githubusercontent.com/huanyuejue/steam-monitor/main/"
+    "{channel}/{component}/{sha256}.toml"
 )
 STEAM_MONITOR_PATTERN_CDN: str = (
-    "https://cdn.jsdelivr.net/gh/OpenSteam001/steam-monitor@pattern/"
+    "https://cdn.jsdelivr.net/gh/OpenSteam001/steam-monitor@{channel}/"
     "{component}/{sha256}.toml"
 )
-STEAM_MONITOR_IPC_RAW: str = (
-    "https://raw.githubusercontent.com/OpenSteam001/steam-monitor/ipc/"
-    "{component}/{sha256}.toml"
-)
-STEAM_MONITOR_IPC_CDN: str = (
-    "https://cdn.jsdelivr.net/gh/OpenSteam001/steam-monitor@ipc/"
-    "{component}/{sha256}.toml"
-)
+# ZSteamTool 1.2.x remote chain. {channel} is "pattern" or "ipc".
+# 顺序参考内核 README：git.lua.tools 自动跟版首选，GitHub raw / 加速镜像兜底。
+STEAM_PATTERN_URL_TEMPLATES: list[str] = [
+    "https://git.lua.tools/luatools/steam-monitor/raw/branch/{channel}/{component}/{sha256}.toml",
+    STEAM_MONITOR_PATTERN_RAW,
+    "https://raw.githubusercontent.com/mmxlyo/steam-monitor/{channel}/{component}/{sha256}.toml",
+    "https://ghfast.top/https://raw.githubusercontent.com/huanyuejue/steam-monitor/main/{channel}/{component}/{sha256}.toml",
+    "https://ghproxy.net/https://raw.githubusercontent.com/huanyuejue/steam-monitor/main/{channel}/{component}/{sha256}.toml",
+    "https://raw.githubusercontent.com/OpenSteam001/steam-monitor/{channel}/{component}/{sha256}.toml",
+    STEAM_MONITOR_PATTERN_CDN,
+]
 STEAMCMD_API: str = "https://api.steamcmd.net/v1/info"
 SUDAMA_API_DEPOT_KEYS: str = "https://api.sudama.app/v1/depotkeys"
 TOKEN_API: str = "https://api.993499094.xyz/appaccesstokens.json"
@@ -160,6 +170,10 @@ STEAM_USER_AGENT: str = (
 
 # ============ Lua 配置 ============
 LUA_DIR_RELATIVE: str = "config/lua"
+LEGACY_LUA_DIR_RELATIVE: str = "config/stplug-in"
+
+# ============ 打包资源 ============
+BUNDLED_PATTERN_DIR: str = "resources/steam_patterns"
 
 # ============ 颜色常量 ============
 COLOR_SUCCESS: str = "#52c41a"

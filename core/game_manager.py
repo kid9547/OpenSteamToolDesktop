@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from core.config_manager import ConfigManager
 from core.local_scanner import LocalGameScanner
+from core import manifest_pins
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -60,6 +61,14 @@ def _build_ticket_lines(metadata: "GameMetadata") -> list[str]:
     if eticket:
         lines.append(f'setETicket({app_id}, "{eticket}")')
         logger.debug(f"  D-encryption: setETicket({app_id}, {len(eticket) // 2} bytes)")
+
+    steam_id = (metadata.steam_id or "").strip()
+    if steam_id:
+        if steam_id.isdigit():
+            lines.append(f'setStat({app_id}, "{steam_id}")')
+            logger.debug(f"  D-encryption: setStat({app_id}, <steamid>)")
+        else:
+            logger.warning("忽略非法 SteamID（必须为十进制数字）: %r", steam_id)
     return lines
 
 
@@ -498,28 +507,19 @@ class LuaGameManager:
             except Exception as e:
                 logger.warning(f"Failed to auto-create manifest.lua: {e}")
 
-        # 检查并补全 <Steam>/opensteamtool.toml
+        # 检查并补全 <Steam>/opensteamtool.toml（保留用户已有配置）
         try:
-            steam_root = os.path.dirname(os.path.dirname(self._lua_dir))
-            toml_path = os.path.join(steam_root, "opensteamtool.toml")
-            if os.path.isdir(steam_root) and not os.path.exists(toml_path):
-                toml_content = (
-                    "# opensteamtool.toml — OpenSteamTool configuration\n"
-                    "# Managed by OpenSteamToolDesktop\n\n"
-                    "[log]\n"
-                    'level = "info"\n\n'
-                    "[manifest]\n"
-                    'url = "wudrm"\n'
-                    "timeout_resolve_ms = 5000\n"
-                    "timeout_connect_ms = 5000\n"
-                    "timeout_send_ms    = 10000\n"
-                    "timeout_recv_ms    = 10000\n\n"
-                    "[stats]\n"
-                    "enable_api = true\n"
-                )
-                with open(toml_path, "w", encoding="utf-8") as f:
-                    f.write(toml_content)
-                logger.info("Auto-created opensteamtool.toml in Steam root")
+            steam_root = self._steam_path
+            if not steam_root and self._lua_dir:
+                steam_root = os.path.dirname(os.path.dirname(os.path.abspath(self._lua_dir)))
+            if steam_root and os.path.isdir(steam_root):
+                from core.opensteamtool_config import merge_config
+
+                ok, message = merge_config(steam_root)
+                if ok:
+                    logger.debug("opensteamtool.toml ready: %s", message)
+                else:
+                    logger.warning("Could not update opensteamtool.toml: %s", message)
         except Exception as e:
             logger.debug(f"Could not verify opensteamtool.toml: {e}")
 
@@ -680,6 +680,13 @@ class LuaGameManager:
         re.IGNORECASE | re.MULTILINE,
     )
 
+    @staticmethod
+    def _steamid_line_re(app_id: str) -> re.Pattern[str]:
+        return re.compile(
+            rf"^\s*setstat\s*\(\s*{re.escape(str(app_id))}\s*,[^)]*\)\s*$",
+            re.IGNORECASE,
+        )
+
     def apply_ticket_bundle(self, app_id: str, bundle) -> str:
         """把 D 加密票据写入（或更新到）该游戏的 Lua 配置文件。
 
@@ -687,10 +694,13 @@ class LuaGameManager:
         在文件末尾追加新票据行。``addappid`` 行保持不变，因此票据一定排在
         ``addappid`` 之后，符合 OpenSteamTool 的 ``LuaConfig::HasDepot`` 前提。
 
+        若 ``bundle.steam_id`` 非空，还会写入 ``setStat(appid, "steamid")``，
+        用于 ZSteamTool 的统计/成就身份覆盖；未显式提供时不会自动写入。
+
         Args:
             app_id: 目标 AppID。
             bundle: :class:`core.credential_store.TicketBundle`（或任何带
-                ``app_ticket`` / ``eticket`` 属性的对象）。
+                ``app_ticket`` / ``eticket`` / ``steam_id`` 属性的对象）。
 
         Returns:
             更新后的 Lua 文件绝对路径。
@@ -707,11 +717,19 @@ class LuaGameManager:
 
         app_ticket = re.sub(r"[\s:_-]", "", getattr(bundle, "app_ticket", "") or "").lower()
         eticket = re.sub(r"[\s:_-]", "", getattr(bundle, "eticket", "") or "").lower()
+        steam_id = str(getattr(bundle, "steam_id", "") or "").strip()
+        if steam_id and not steam_id.isdigit():
+            logger.warning("忽略非法 SteamID（必须为十进制数字）: %r", steam_id)
+            steam_id = ""
 
         with open(filepath, "r", encoding="utf-8", errors="replace") as stream:
             content = stream.read()
 
-        kept = [line for line in content.splitlines() if not self._TICKET_LINE_RE.match(line)]
+        steamid_re = self._steamid_line_re(app_id)
+        kept = [
+            line for line in content.splitlines()
+            if not self._TICKET_LINE_RE.match(line) and not steamid_re.match(line)
+        ]
         while kept and not kept[-1].strip():
             kept.pop()
 
@@ -729,15 +747,18 @@ class LuaGameManager:
             kept.append(f'setAppTicket({app_id}, "{app_ticket}")')
         if eticket:
             kept.append(f'setETicket({app_id}, "{eticket}")')
+        if steam_id:
+            kept.append(f'setStat({app_id}, "{steam_id}")')
 
         with open(filepath, "w", encoding="utf-8") as stream:
             stream.write("\n".join(kept) + "\n")
 
         logger.info(
-            "已更新 Lua 票据 appid=%s appticket=%s eticket=%s",
+            "已更新 Lua 票据 appid=%s appticket=%s eticket=%s steamid=%s",
             app_id,
             f"{len(app_ticket) // 2}B" if app_ticket else "-",
             f"{len(eticket) // 2}B" if eticket else "-",
+            steam_id or "-",
         )
         return filepath
 
@@ -745,15 +766,15 @@ class LuaGameManager:
         """仅从 Lua 文本判断票据是否存在（不访问注册表，便于界面快速展示）。"""
         app_id = str(app_id)
         if not self._lua_dir:
-            return {"has_app_ticket": False, "has_eticket": False}
+            return {"has_app_ticket": False, "has_eticket": False, "has_steam_id": False}
         filepath = os.path.join(self._lua_dir, f"{app_id}.lua")
         if not os.path.isfile(filepath):
-            return {"has_app_ticket": False, "has_eticket": False}
+            return {"has_app_ticket": False, "has_eticket": False, "has_steam_id": False}
         try:
             with open(filepath, "r", encoding="utf-8", errors="replace") as stream:
                 content = stream.read()
         except OSError:
-            return {"has_app_ticket": False, "has_eticket": False}
+            return {"has_app_ticket": False, "has_eticket": False, "has_steam_id": False}
         pattern = re.compile(
             r"set(app|e)ticket\(\s*(\d+)\s*,", re.IGNORECASE
         )
@@ -765,7 +786,43 @@ class LuaGameManager:
                 has_app = True
             else:
                 has_e = True
-        return {"has_app_ticket": has_app, "has_eticket": has_e}
+        has_steam_id = bool(self._steamid_line_re(app_id).search(content))
+        return {
+            "has_app_ticket": has_app,
+            "has_eticket": has_e,
+            "has_steam_id": has_steam_id,
+        }
+
+    def update_steam_id(self, app_id: str, steam_id: str) -> str:
+        """更新（或清除）Lua 中的 ``setStat(appid, "steamid")`` 行。
+
+        该指令只影响 ZSteamTool 的统计/成就身份，不改变票据本身。传入空字符串
+        表示删除现有覆盖，恢复为登录账号身份。
+
+        Raises:
+            ValueError: 未配置 Lua 目录、Lua 文件不存在或 SteamID 非法。
+        """
+        app_id = str(app_id)
+        steam_id = str(steam_id or "").strip()
+        if steam_id and not steam_id.isdigit():
+            raise ValueError("SteamID 必须为十进制数字")
+        if not self._lua_dir:
+            raise ValueError("未配置 Lua 目录，无法写入 SteamID")
+        filepath = os.path.join(self._lua_dir, f"{app_id}.lua")
+        if not os.path.isfile(filepath):
+            raise ValueError(f"Lua 文件不存在: {filepath}")
+
+        steamid_re = self._steamid_line_re(app_id)
+        with open(filepath, "r", encoding="utf-8", errors="replace") as stream:
+            kept = [line for line in stream.read().splitlines() if not steamid_re.match(line)]
+        while kept and not kept[-1].strip():
+            kept.pop()
+        if steam_id:
+            kept.append(f'setStat({app_id}, "{steam_id}")')
+        with open(filepath, "w", encoding="utf-8") as stream:
+            stream.write("\n".join(kept) + "\n")
+        logger.info("已更新 Lua SteamID appid=%s steamid=%s", app_id, steam_id or "(cleared)")
+        return filepath
 
     def remove_game(
         self,
@@ -851,26 +908,52 @@ class LuaGameManager:
     # ---- 内部方法 ----
 
     def _scan_lua_dir(self) -> list[GameInfo]:
-        """扫描 Lua 目录，解析所有 .lua 文件"""
-        if not self._lua_dir or not os.path.isdir(self._lua_dir):
-            logger.debug(f"Cannot scan: lua_dir is empty or not a directory")
+        """扫描 Lua 目录，解析所有 .lua 文件
+
+        ZSteamTool 的 ``[lua] paths`` 同时包含 ``config/lua`` 与旧版
+        ``config/stplug-in``。这里两处都扫描，按 AppID 去重，现代目录优先。
+        """
+        scan_dirs = self._lua_scan_dirs()
+        if not scan_dirs:
+            logger.debug("Cannot scan: no Lua directory exists")
             return []
 
-        logger.debug(f"Scanning Lua directory: {self._lua_dir}")
+        logger.debug(f"Scanning Lua directories: {scan_dirs}")
         games: list[GameInfo] = []
-        try:
-            lua_files = [f for f in os.listdir(self._lua_dir) if f.endswith(".lua")]
-            logger.debug(f"Found {len(lua_files)} .lua files")
-            for fname in lua_files:
-                path = os.path.join(self._lua_dir, fname)
-                info = self._parse_lua_file(path)
-                if info:
-                    games.append(info)
-            logger.debug(f"Parsed {len(games)} games from Lua files")
-        except OSError as e:
-            logger.error(f"Failed to scan Lua directory: {e}")
+        seen: set[str] = set()
+        for lua_dir in scan_dirs:
+            try:
+                lua_files = [f for f in os.listdir(lua_dir) if f.endswith(".lua")]
+                logger.debug(f"Found {len(lua_files)} .lua files in {lua_dir}")
+                for fname in lua_files:
+                    path = os.path.join(lua_dir, fname)
+                    info = self._parse_lua_file(path)
+                    if info and info.app_id not in seen:
+                        seen.add(info.app_id)
+                        games.append(info)
+            except OSError as e:
+                logger.error(f"Failed to scan Lua directory {lua_dir}: {e}")
 
+        logger.debug(f"Parsed {len(games)} games from Lua files")
         return games
+
+    def _lua_scan_dirs(self) -> list[str]:
+        """返回需要扫描的 Lua 目录（去重，现代目录优先）。"""
+        candidates: list[str] = []
+        if self._lua_dir:
+            candidates.append(self._lua_dir)
+        if self._steam_path:
+            candidates.append(os.path.join(self._steam_path, "config", "lua"))
+            candidates.append(os.path.join(self._steam_path, "config", "stplug-in"))
+        result: list[str] = []
+        seen: set[str] = set()
+        for path in candidates:
+            key = os.path.normcase(os.path.abspath(path))
+            if key in seen or not os.path.isdir(path):
+                continue
+            seen.add(key)
+            result.append(path)
+        return result
 
     def _parse_lua_file(self, path: str) -> GameInfo | None:
         """解析单个 Lua 文件提取游戏信息
@@ -923,8 +1006,8 @@ class LuaGameManager:
                 re.IGNORECASE,
             )
             if manifest_matches:
-                steam_root = ""
-                if self._lua_dir:
+                steam_root = self._steam_path or ""
+                if not steam_root and self._lua_dir:
                     try:
                         steam_root = os.path.dirname(os.path.dirname(os.path.abspath(self._lua_dir)))
                     except Exception:
@@ -999,33 +1082,84 @@ class LuaGameManager:
 
         # ── Depot 密钥 ──
         # 关键修复：不再将 app_level_key 作为 depot 回退密钥！
-        # 每个 depot 有自己唯一的加密密钥，必须从 Sudama 按 depot_id 单独查找
+        # 每个 depot 有自己唯一的加密密钥，必须从 Sudama 按 depot_id 单独查找。
+        # 同时按 depot_id 去重：元数据里同一 depot 可能同时出现在主游戏和 DLC 列表。
+        seen_addappid: set[str] = {str(metadata.app_id)}
+
+        def _depot_id(depot: DepotInfo) -> str:
+            return str(getattr(depot, "depot_id", "") or "").strip()
+
+        def _add_depot(depot: DepotInfo) -> bool:
+            did = _depot_id(depot)
+            if not did.isdigit() or did in seen_addappid:
+                return False
+            seen_addappid.add(did)
+            if depot.depot_key:
+                lines.append(f'addappid({did}, 0, "{depot.depot_key}")')
+            else:
+                # 无密钥的 depot 也必须注册；DLL 会通过其他方式获取密钥
+                lines.append(f"addappid({did})")
+            return True
+
+        def _merged_depots(source: list[DepotInfo]) -> list[DepotInfo]:
+            merged: dict[str, DepotInfo] = {}
+            order: list[str] = []
+            for depot in source:
+                did = _depot_id(depot)
+                if not did.isdigit():
+                    continue
+                if did not in merged:
+                    merged[did] = DepotInfo(
+                        depot_id=did,
+                        manifest_gid=depot.manifest_gid,
+                        size=depot.size,
+                        depot_key=depot.depot_key,
+                    )
+                    order.append(did)
+                    continue
+                current = merged[did]
+                if depot.depot_key and not current.depot_key:
+                    current.depot_key = depot.depot_key
+                if depot.manifest_gid and not current.manifest_gid:
+                    current.manifest_gid = depot.manifest_gid
+                    current.size = depot.size
+                elif depot.size and not current.size:
+                    current.size = depot.size
+            return [merged[did] for did in order]
+
+        main_depots = _merged_depots(metadata.depots)
+        added_main: list[DepotInfo] = []
         main_depot_with_key = 0
         main_depot_without_key = 0
-        for depot in metadata.depots:
-            if depot.depot_key:
-                # 有专属 depot 密钥 → 带密钥注册
-                lines.append(f'addappid({depot.depot_id}, 0, "{depot.depot_key}")')
-                main_depot_with_key += 1
-            else:
-                # 无密钥 → 仅注册 depot（DLL 可能通过其他方式获取密钥）
-                lines.append(f"addappid({depot.depot_id})")
-                main_depot_without_key += 1
+        for depot in main_depots:
+            if _add_depot(depot):
+                added_main.append(depot)
+                if depot.depot_key:
+                    main_depot_with_key += 1
+                else:
+                    main_depot_without_key += 1
         logger.debug(f"  Main depots: {main_depot_with_key} with keys, {main_depot_without_key} without keys")
 
         # OpenSteamTool 支持绑定 depot 的 manifest，避免 Steam 更新到不可用的
         # 分支或在运行时重新解析到错误的清单。
         manifest_count = 0
-        for depot in metadata.depots:
-            if depot.manifest_gid:
-                if depot.size > 0:
+        for depot in added_main:
+            pinned_gid = manifest_pins.pinned_gid(metadata.app_id, depot.depot_id)
+            gid = pinned_gid or depot.manifest_gid
+            size = (
+                manifest_pins.pinned_size(metadata.app_id, depot.depot_id)
+                if pinned_gid
+                else depot.size
+            )
+            if gid:
+                if size > 0:
                     lines.append(
                         f"setManifestid({depot.depot_id}, "
-                        f"\"{depot.manifest_gid}\", {depot.size})"
+                        f"\"{gid}\", {size})"
                     )
                 else:
                     lines.append(
-                        f"setManifestid({depot.depot_id}, \"{depot.manifest_gid}\")"
+                        f"setManifestid({depot.depot_id}, \"{gid}\")"
                     )
                 manifest_count += 1
         if manifest_count:
@@ -1037,35 +1171,55 @@ class LuaGameManager:
 
         # ── DLC 入库 ──
         dlc_count = 0
-        for dlc_id in sorted(set(metadata.dlc_ids), key=int):
-            if dlc_id == metadata.app_id:
+        dlc_ids = {str(item).strip() for item in metadata.dlc_ids}
+        for dlc_id in sorted((item for item in dlc_ids if item.isdigit()), key=int):
+            dlc_id = str(dlc_id)
+            if dlc_id in seen_addappid:
                 continue
+            seen_addappid.add(dlc_id)
             lines.append(f"addappid({dlc_id})")
             dlc_count += 1
         if dlc_count > 0:
             logger.debug(f"  Added {dlc_count} DLC(s)")
 
         # ── DLC Depot 密钥 ──
+        # 无密钥的 DLC depot 同样需要 addappid(depot_id)（旧版直接跳过，导致
+        # 部分 DLC 只有 appid 行、没有 depot 行，Steam 无法解析对应内容）。
+        dlc_depots = _merged_depots([depot for _dlc_appid, depot in metadata.dlc_depots])
+        added_dlc: list[DepotInfo] = []
         dlc_depot_with_key = 0
-        for dlc_appid, depot in metadata.dlc_depots:
-            if depot.depot_key:
-                lines.append(f'addappid({depot.depot_id}, 0, "{depot.depot_key}")')
-                dlc_depot_with_key += 1
-            # 无密钥的 DLC depot 不单独注册（已通过 DLC appid 行注册）
-        if dlc_depot_with_key > 0:
-            logger.debug(f"  Added {dlc_depot_with_key} DLC depot key(s)")
+        dlc_depot_without_key = 0
+        for depot in dlc_depots:
+            if _add_depot(depot):
+                added_dlc.append(depot)
+                if depot.depot_key:
+                    dlc_depot_with_key += 1
+                else:
+                    dlc_depot_without_key += 1
+        if dlc_depot_with_key or dlc_depot_without_key:
+            logger.debug(
+                f"  Added {dlc_depot_with_key} DLC depot key(s), "
+                f"{dlc_depot_without_key} keyless DLC depot(s)"
+            )
 
         dlc_manifest_count = 0
-        for _dlc_appid, depot in metadata.dlc_depots:
-            if depot.manifest_gid:
-                if depot.size > 0:
+        for depot in added_dlc:
+            pinned = manifest_pins.pinned_gid(metadata.app_id, depot.depot_id)
+            gid = pinned or depot.manifest_gid
+            size = (
+                manifest_pins.pinned_size(metadata.app_id, depot.depot_id)
+                if pinned
+                else depot.size
+            )
+            if gid:
+                if size > 0:
                     lines.append(
                         f"setManifestid({depot.depot_id}, "
-                        f"\"{depot.manifest_gid}\", {depot.size})"
+                        f"\"{gid}\", {size})"
                     )
                 else:
                     lines.append(
-                        f"setManifestid({depot.depot_id}, \"{depot.manifest_gid}\")"
+                        f"setManifestid({depot.depot_id}, \"{gid}\")"
                     )
                 dlc_manifest_count += 1
         if dlc_manifest_count:

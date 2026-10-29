@@ -50,6 +50,8 @@ from qfluentwidgets import (
 )
 
 from core.manifest_cache import ManifestCacheManager, game_manifest_view
+from core import manifest_pins
+from gui.manifest_pin_dialog import ManifestPinDialog
 from core.config_manager import ConfigManager
 from utils.async_worker import AsyncWorker
 from utils.logger import setup_logger
@@ -518,6 +520,8 @@ class ManifestPage(ScrollArea):
                 if game["damaged"]:
                     parts.append(f"损坏 {game['damaged']} 个")
                 status = "、".join(parts) + f"（{game['present']}/{game['declared']}）"
+            if manifest_pins.has_pins(app_id):
+                status += " · 已固定"
             self._game_table.setItem(row, 2, QTableWidgetItem(status))
             self._game_table.setItem(row, 3, QTableWidgetItem(str(game["file_count"])))
 
@@ -525,6 +529,11 @@ class ManifestPage(ScrollArea):
             ops_layout = QHBoxLayout(ops)
             ops_layout.setContentsMargins(2, 2, 2, 2)
             ops_layout.setSpacing(6)
+            pin_btn = PushButton("固定版本", ops)
+            pin_btn.clicked.connect(
+                lambda _=False, a=app_id, n=game["name"], p=game.get("lua_path", ""): self._on_pin_game(a, n, p)
+            )
+            ops_layout.addWidget(pin_btn)
             complete_btn = PushButton("补全", ops)
             complete_btn.clicked.connect(lambda _=False, a=app_id: self._on_complete_one(a))
             ops_layout.addWidget(complete_btn)
@@ -533,6 +542,41 @@ class ManifestPage(ScrollArea):
             ops_layout.addWidget(delete_btn)
             ops_layout.addStretch()
             self._game_table.setCellWidget(row, 4, ops)
+
+    def _on_pin_game(self, app_id: str, game_name: str, lua_path: str = "") -> None:
+        """打开 Manifest 版本固定对话框。"""
+        if not lua_path:
+            for directory in self._lua_dirs():
+                candidate = Path(directory) / f"{app_id}.lua"
+                if candidate.is_file():
+                    lua_path = str(candidate)
+                    break
+        if not lua_path or not Path(lua_path).is_file():
+            InfoBar.warning(
+                "找不到 Lua",
+                f"AppID {app_id} 没有可编辑的 Lua 规则文件。",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=4000,
+            )
+            return
+        dialog = ManifestPinDialog(
+            app_id,
+            game_name,
+            lua_path,
+            steam_path=self._steam_path(),
+            parent=self,
+        )
+        if dialog.exec():
+            InfoBar.success(
+                "固定设置已保存",
+                f"更新 {dialog.changed_count} 个 Depot，写回 {dialog.applied_count} 条固定 GID。",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=4000,
+            )
+            self.manifests_changed.emit()
+            self._on_scan()
 
     def _render_expert_table(self) -> None:
         self._table.setRowCount(len(self._expert_rows))

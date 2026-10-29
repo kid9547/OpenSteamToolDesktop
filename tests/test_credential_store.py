@@ -52,6 +52,38 @@ def test_bundle_validate_flags_bad_appid_and_steamid():
     assert any("SteamID" in item for item in problems)
 
 
+def test_embedded_app_id_accepts_two_byte_aligned_denuvo_layout():
+    """回归：Onimusha 的真实票据 AppID 位于偏移 50，不是 4 字节对齐。"""
+    import struct
+
+    steam_id = 76561198028121353
+    ticket = (
+        struct.pack("<IIQ", 178, 4, steam_id)
+        + b"\x00" * (50 - 16)
+        + struct.pack("<I", 2638890)
+        + b"\x00" * (178 - 54)
+    )
+    assert cs._embedded_app_id_offset(ticket, 2638890) == 50
+    bundle = cs.TicketBundle(app_id="2638890", app_ticket=ticket.hex())
+    assert bundle.validate() == []
+
+
+def test_bundle_validate_can_require_eticket_for_denuvo():
+    import struct
+
+    steam_id = 76561198028121353
+    ticket = (
+        struct.pack("<IIQ", 52, 2, steam_id)
+        + struct.pack("<I", 42)
+        + b"\x00" * 16
+    )
+    bundle = cs.TicketBundle(app_id="42", app_ticket=ticket.hex())
+
+    assert bundle.validate() == []
+    problems = bundle.validate(require_eticket=True)
+    assert any("ETicket" in item for item in problems)
+
+
 def test_bundle_lua_lines_use_setappticket_and_seteticket():
     bundle = cs.TicketBundle(app_id="1361510", app_ticket="AABB", eticket="CCDD")
     assert bundle.lua_lines() == [
@@ -156,14 +188,18 @@ def fake_registry(monkeypatch):
 
 
 def test_write_bundle_then_read_back(fake_registry):
-    bundle = cs.TicketBundle(app_id="1361510", app_ticket="1400", eticket="1500")
+    import struct
+
+    steam_id = 76561198028121353
+    app_ticket = struct.pack("<IIQ", 20, 2, steam_id) + struct.pack("<I", 1361510)
+    bundle = cs.TicketBundle(app_id="1361510", app_ticket=app_ticket.hex(), eticket="1500")
     written = cs.write_bundle(bundle)
 
-    assert written[cs.VALUE_APP_TICKET] == 2
+    assert written[cs.VALUE_APP_TICKET] == len(app_ticket)
     assert written[cs.VALUE_ETICKET] == 2
 
     stored = cs.read("1361510")
-    assert stored.app_ticket == b"\x14\x00"
+    assert stored.app_ticket == app_ticket
     assert stored.eticket == b"\x15\x00"
     assert stored.present is True
 
@@ -178,7 +214,7 @@ def test_write_steam_id_uses_decimal_string_and_derives_from_ticket(fake_registr
     import struct
 
     steam_id = 76561198028121353
-    ticket = struct.pack("<IIQ", 52, 2, steam_id) + b"\x00" * 20
+    ticket = struct.pack("<IIQ", 52, 2, steam_id) + struct.pack("<I", 42) + b"\x00" * 16
     bundle = cs.TicketBundle(app_id="42", app_ticket=ticket.hex())
     written = cs.write_bundle(bundle)
 

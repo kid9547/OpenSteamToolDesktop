@@ -312,9 +312,9 @@ def test_mint_client_maps_other_status(monkeypatch):
         ts.TicketMintClient("http://x").mint("5")
 
 
-def test_runtime_mint_flag_is_off_for_stock_dll():
-    """官方 OpenSteamTool v1.4.8 没有 seteticketurl，必须报告为不支持。"""
-    assert ts.mint_supported_by_runtime() is False
+def test_runtime_mint_flag_is_on_for_zsteamtool():
+    """ZSteamTool v1.2.x 的 LuaConfig 注册了 seteticketurl，必须报告为支持。"""
+    assert ts.mint_supported_by_runtime() is True
 
 
 def test_ready_note_explains_no_offline_forgery():

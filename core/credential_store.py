@@ -46,6 +46,27 @@ _STEAMID64_BASE = 76561197960265728
 
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 
+# AppTicket 最小结构：Size(4) + Version(4) + SteamID(8) + AppID(4) = 20 字节
+_APP_TICKET_MIN_BYTES = 20
+
+
+def _embedded_app_id_offset(ticket: bytes, app_id: int) -> int:
+    """在 AppTicket 中定位内嵌 AppID。
+
+    常规票据 AppID 位于偏移 16；部分 D 加密标题的布局不同，实测
+    《Onimusha: Way of the Sword》(2638890) 的 178 字节票据把 AppID 放在
+    偏移 50（2 字节对齐，而非 4 字节对齐）。因此这里按字节扫描整个票据，
+    首个命中即采纳；32 位值误命中概率约为票据长度 / 2^32，可忽略。
+    """
+    if len(ticket) >= 20 and int.from_bytes(ticket[16:20], "little") == app_id:
+        return 16
+    for offset in range(0, len(ticket) - 3):
+        if offset == 16:
+            continue
+        if int.from_bytes(ticket[offset:offset + 4], "little") == app_id:
+            return offset
+    return -1
+
 
 class CredentialError(RuntimeError):
     """凭据读写失败。"""
@@ -179,18 +200,54 @@ class TicketBundle:
             return str(parsed) if parsed else ""
         return ""
 
-    def validate(self) -> list[str]:
-        """返回问题列表；空列表表示结构可用。"""
+    def validate(self, require_eticket: bool = False) -> list[str]:
+        """返回问题列表；空列表表示结构可用。
+
+        校验项参考 Fluent-Steam-Lua 的 ``AuthorizationService``：
+
+        * AppID 必须为正整数；
+        * AppTicket / ETicket 必须是偶数长度的十六进制；
+        * AppTicket 至少 20 字节（Size + Version + SteamID + AppID）；
+        * AppTicket 偏移 8 处的 SteamID 必须非零；
+        * AppTicket 内必须能找到声明的 AppID（偏移 16 或 4 字节对齐扫描）。
+
+        Args:
+            require_eticket: D 加密写入前应设为 ``True``。参考项目的
+                ``AuthorizationService`` 在 ETicket 为 ``null`` 时直接判定失败；
+                AppTicket 只能证明所有权，不能完成 Denuvo 授权握手。
+        """
         problems: list[str] = []
-        if not str(self.app_id).isdigit():
+        if not str(self.app_id).isdigit() or int(self.app_id) <= 0:
             problems.append(f"AppID 非法: {self.app_id!r}")
+        if require_eticket and not self.eticket:
+            problems.append(
+                "缺少 ETicket（D 加密必须同时提供 AppTicket 与 ETicket；"
+                "ETicket 只能由实际拥有该游戏的账号提取，"
+                "家庭共享/借用授权无法取得）"
+            )
+        decoded: dict[str, bytes] = {}
         for label, value in (("AppTicket", self.app_ticket), ("ETicket", self.eticket)):
             if not value:
                 continue
             try:
-                hex_to_bytes(value)
+                decoded[label] = hex_to_bytes(value)
             except CredentialError as exc:
                 problems.append(f"{label} 无效: {exc}")
+
+        app_bytes = decoded.get("AppTicket")
+        if app_bytes:
+            if len(app_bytes) < _APP_TICKET_MIN_BYTES:
+                problems.append(
+                    f"AppTicket 过短: {len(app_bytes)} 字节（至少 {_APP_TICKET_MIN_BYTES} 字节）"
+                )
+            else:
+                embedded = int.from_bytes(app_bytes[8:16], "little")
+                if embedded == 0:
+                    problems.append("AppTicket 内嵌 SteamID 为 0")
+                if str(self.app_id).isdigit() and int(self.app_id) > 0:
+                    if _embedded_app_id_offset(app_bytes, int(self.app_id)) < 0:
+                        problems.append(f"AppTicket 内未找到声明的 AppID {self.app_id}")
+
         sid = self.derived_steam_id
         if sid:
             if not sid.isdigit():
@@ -210,6 +267,9 @@ class TicketBundle:
             lines.append(f'setAppTicket({self.app_id}, "{normalize_hex(self.app_ticket)}")')
         if self.eticket:
             lines.append(f'setETicket({self.app_id}, "{normalize_hex(self.eticket)}")')
+        sid = self.derived_steam_id
+        if sid and sid.isdigit():
+            lines.append(f'setStat({self.app_id}, "{sid}")')
         return lines
 
 

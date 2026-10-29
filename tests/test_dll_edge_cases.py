@@ -69,7 +69,7 @@ class TestDLLEdgeCases:
         # 第二次调用（爬取页面）成功
         mock_scrape_response = Mock()
         mock_scrape_response.text = '''
-        <a href="/OpenSteam001/OpenSteamTool/releases/tag/v1.2.3">v1.2.3</a>
+        <a href="/hazjy/ZSteamTool/releases/tag/v1.2.3">v1.2.3</a>
         '''
         mock_scrape_response.raise_for_status = Mock()
 
@@ -214,11 +214,11 @@ class TestDLLEdgeCases:
 
         # 测试各种异常版本号格式
         test_cases = [
-            ("v1.2", (0, 0, 0)),  # 只有 2 段
-            ("v1.2.3.4", (0, 0, 0)),  # 4 段（不应匹配）
-            ("version1.2.3", (0, 0, 0)),  # 前缀不是 v
-            ("", (0, 0, 0)),  # 空字符串
-            ("latest", (0, 0, 0)),  # 非数字
+            ("v1.2", (0, 0, 0, 0)),  # 只有 2 段
+            ("v1.2.3.4", (1, 2, 3, 4)),  # 4 段（支持）
+            ("version1.2.3", (0, 0, 0, 0)),  # 前缀不是 v
+            ("", (0, 0, 0, 0)),  # 空字符串
+            ("latest", (0, 0, 0, 0)),  # 非数字
         ]
 
         for version_str, expected in test_cases:
@@ -239,7 +239,7 @@ class TestDLLEdgeCases:
 
         # 无效目录名
         assert manager._is_valid_version_dir("v1.2") is False
-        assert manager._is_valid_version_dir("v1.2.3.4") is False
+        assert manager._is_valid_version_dir("v1.2.3.4") is True  # 支持 4 段
         assert manager._is_valid_version_dir("OpenSteamTool-x64") is False
         assert manager._is_valid_version_dir("current_version.json") is False
         assert manager._is_valid_version_dir("") is False

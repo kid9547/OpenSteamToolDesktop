@@ -20,18 +20,19 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QDialog, QTableWidget, QTableWidgetItem, QAbstractItemView,
+    QPlainTextEdit,
 )
 
 from qfluentwidgets import (
     ScrollArea, SubtitleLabel, CaptionLabel, BodyLabel, StrongBodyLabel,
-    PrimaryPushButton, PushButton, LineEdit, SwitchButton,
+    PrimaryPushButton, PushButton, LineEdit, SwitchButton, ComboBox,
     CardWidget, GroupHeaderCardWidget, InfoBar, InfoBarPosition,
     FluentIcon,
 )
 
 from config import (
     SSL_VERIFY, MANIFEST_GITHUB_REPOS, GITHUB_RAW_MIRRORS,
-    MANIFESTHUB_API_URL, MANIFESTHUB_API_KEY,
+    MANIFESTHUB_API_URL, MANIFESTHUB_API_KEY, STEAM_PATTERN_URL_TEMPLATES,
 )
 from core.config_manager import ConfigManager
 from core.manifest_downloader import fetch_manifesthub_upstream_info
@@ -80,7 +81,16 @@ class SettingsPage(ScrollArea):
         # 2. 多源下载体系审查与测速卡片
         self._build_sources_card()
 
-        # 3. 本地全盘扫描与第三方工具兼容卡片
+        # 3. 内核功能开关（OnlineFix / 云存档重定向）
+        self._build_kernel_features_card()
+
+        # 4. Manifest 解析服务探测与回退
+        self._build_manifest_router_card()
+
+        # 5. 签名镜像与本地缓存
+        self._build_pattern_mirror_card()
+
+        # 6. 本地全盘扫描与第三方工具兼容卡片
         self._build_scan_card()
 
         self._main_layout.addStretch(1)
@@ -452,7 +462,376 @@ class SettingsPage(ScrollArea):
         worker.start()
         self._workers.append(worker)
 
-    # ── 3. 本地磁盘 Steam 库扫描与第三方工具兼容 ─────────────────────
+    # ── 3. 内核功能开关（OnlineFix / 云存档重定向）─────────────────
+
+    def _steam_root(self) -> str:
+        if not self._bridge:
+            return ""
+        try:
+            return str(self._bridge.get_steam_path() or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _build_kernel_features_card(self):
+        card = CardWidget(self)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(20, 20, 20, 20)
+        card_layout.setSpacing(14)
+
+        header_layout = QHBoxLayout()
+        icon_lbl = QLabel(self)
+        icon_lbl.setPixmap(FluentIcon.DEVELOPER_TOOLS.icon().pixmap(24, 24))
+        header_layout.addWidget(icon_lbl)
+        header_layout.addWidget(StrongBodyLabel("内核功能开关（ZSteamTool v1.2.x）", card))
+        header_layout.addStretch(1)
+        card_layout.addLayout(header_layout)
+
+        note = CaptionLabel(
+            "以下选项写入 <Steam>/opensteamtool.toml，重启 Steam 后生效；已有用户配置会被保留。",
+            card,
+        )
+        note.setStyleSheet("color: #888888;")
+        card_layout.addWidget(note)
+
+        # OnlineFix 会话环境
+        row1 = QHBoxLayout()
+        vbox1 = QVBoxLayout()
+        vbox1.addWidget(BodyLabel("OnlineFix 会话环境（[onlinefix] env_session）", card))
+        sub1 = CaptionLabel(
+            "为 OnlineFix 联机游戏注入会话环境变量。使用 OnlineFix 补丁时开启；纯单机可关闭。", card
+        )
+        sub1.setStyleSheet("color: #888888;")
+        vbox1.addWidget(sub1)
+        self.switch_onlinefix = SwitchButton(card)
+        self.switch_onlinefix.checkedChanged.connect(self._on_onlinefix_changed)
+        row1.addLayout(vbox1, 1)
+        row1.addWidget(self.switch_onlinefix)
+        card_layout.addLayout(row1)
+
+        # 云存档重定向
+        row2 = QHBoxLayout()
+        vbox2 = QVBoxLayout()
+        vbox2.addWidget(BodyLabel("云存档重定向（[cloud] enabled）", card))
+        sub2 = CaptionLabel(
+            "启用后内核会加载 cloud_redirect.dll，把 Steam 云存档改写到本地目录。"
+            "该 DLL 未随本项目分发，需自行获取并放入 Steam 根目录。", card
+        )
+        sub2.setStyleSheet("color: #888888;")
+        vbox2.addWidget(sub2)
+        self.switch_cloud = SwitchButton(card)
+        self.switch_cloud.checkedChanged.connect(self._on_cloud_toggled)
+        row2.addLayout(vbox2, 1)
+        row2.addWidget(self.switch_cloud)
+        card_layout.addLayout(row2)
+
+        lib_row = QHBoxLayout()
+        lib_row.addWidget(BodyLabel("DLL 文件名：", card))
+        self.cloud_library_input = LineEdit(card)
+        self.cloud_library_input.setPlaceholderText("cloud_redirect.dll")
+        self.cloud_library_input.setFixedHeight(32)
+        lib_row.addWidget(self.cloud_library_input, 1)
+        btn_detect = PushButton(FluentIcon.SYNC, "重新检测", card)
+        btn_detect.clicked.connect(self._refresh_cloud_status)
+        lib_row.addWidget(btn_detect)
+        btn_save_cloud = PrimaryPushButton(FluentIcon.SAVE, "保存云存档设置", card)
+        btn_save_cloud.clicked.connect(self._on_save_cloud)
+        lib_row.addWidget(btn_save_cloud)
+        card_layout.addLayout(lib_row)
+
+        self.cloud_status_lbl = CaptionLabel("未检测", card)
+        self.cloud_status_lbl.setWordWrap(True)
+        self.cloud_status_lbl.setStyleSheet("color: #888888;")
+        card_layout.addWidget(self.cloud_status_lbl)
+
+        self._main_layout.addWidget(card)
+
+    def _on_onlinefix_changed(self, checked: bool):
+        if not self._bridge:
+            InfoBar.warning("不可用", "未检测到 Steam，无法写入内核配置", parent=self, position=InfoBarPosition.TOP)
+            return
+        ok, message = self._bridge.update_kernel_config({"onlinefix": {"env_session": bool(checked)}})
+        if ok:
+            InfoBar.success("已保存", f"OnlineFix 会话环境已{'开启' if checked else '关闭'}", parent=self, position=InfoBarPosition.TOP, duration=2500)
+        else:
+            InfoBar.error("保存失败", message, parent=self, position=InfoBarPosition.TOP, duration=5000)
+
+    def _on_cloud_toggled(self, checked: bool):
+        # 仅记录到内存；点“保存云存档设置”后写入 TOML，避免只改一半。
+        self._refresh_cloud_status()
+
+    def _on_save_cloud(self):
+        if not self._bridge:
+            InfoBar.warning("不可用", "未检测到 Steam，无法写入内核配置", parent=self, position=InfoBarPosition.TOP)
+            return
+        library = self.cloud_library_input.text().strip() or "cloud_redirect.dll"
+        ok, message = self._bridge.update_kernel_config(
+            {"cloud": {"enabled": self.switch_cloud.isChecked(), "library": library}}
+        )
+        if ok:
+            InfoBar.success("已保存", "云存档重定向设置已写入 opensteamtool.toml", parent=self, position=InfoBarPosition.TOP, duration=3000)
+        else:
+            InfoBar.error("保存失败", message, parent=self, position=InfoBarPosition.TOP, duration=5000)
+        self._refresh_cloud_status()
+
+    def _refresh_cloud_status(self):
+        steam = self._steam_root()
+        library = self.cloud_library_input.text().strip() or "cloud_redirect.dll"
+        if not steam:
+            self.cloud_status_lbl.setText("⚠️ 未检测到 Steam 安装目录")
+            self.cloud_status_lbl.setStyleSheet("color: #fa8c16;")
+            return
+        path = os.path.join(steam, library)
+        if os.path.isfile(path):
+            self.cloud_status_lbl.setText(f"✅ 已检测到 {path}")
+            self.cloud_status_lbl.setStyleSheet("color: #52c41a;")
+        else:
+            self.cloud_status_lbl.setText(f"⚠️ 未找到 {path}，启用后云存档重定向不会生效")
+            self.cloud_status_lbl.setStyleSheet("color: #fa8c16;")
+
+    # ── 4. Manifest 解析服务探测与回退 ────────────────────────────
+
+    _MANIFEST_PROVIDERS = ("wudrm", "steamrun", "opensteamtool")
+    _MANIFEST_PROBE_URLS = {
+        "wudrm": "http://gmrc.wudrm.com/manifest/3938499722445376447",
+        "steamrun": "https://manifest.steam.run/api/manifest/3938499722445376447",
+        "opensteamtool": "https://manifest.opensteamtool.com/3938499722445376447",
+    }
+
+    def _build_manifest_router_card(self):
+        card = CardWidget(self)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(20, 20, 20, 20)
+        card_layout.setSpacing(14)
+
+        header_layout = QHBoxLayout()
+        icon_lbl = QLabel(self)
+        icon_lbl.setPixmap(FluentIcon.CONNECT.icon().pixmap(24, 24))
+        header_layout.addWidget(icon_lbl)
+        header_layout.addWidget(StrongBodyLabel("Manifest 解析服务与自动回退", card))
+        header_layout.addStretch(1)
+        card_layout.addLayout(header_layout)
+
+        desc = CaptionLabel(
+            "内核通过 [manifest] url 选择清单请求码服务。wudrm 国内可用；steamrun 作为回退；"
+            "opensteamtool 官方接口可能被 Cloudflare 拦截。config/lua/manifest.lua 中的 "
+            "fetch_manifest_code() 会优先尝试 wudrm，再回退 steamrun。",
+            card,
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #888888;")
+        card_layout.addWidget(desc)
+
+        row = QHBoxLayout()
+        row.addWidget(BodyLabel("当前服务：", card))
+        self.manifest_combo = ComboBox(card)
+        self.manifest_combo.addItems(list(self._MANIFEST_PROVIDERS))
+        self.manifest_combo.setFixedWidth(180)
+        row.addWidget(self.manifest_combo)
+        btn_save = PrimaryPushButton(FluentIcon.SAVE, "保存服务", card)
+        btn_save.clicked.connect(self._on_save_manifest_provider)
+        row.addWidget(btn_save)
+        btn_probe = PushButton(FluentIcon.SPEED_HIGH, "探测并自动选择", card)
+        btn_probe.clicked.connect(self._on_probe_manifest)
+        row.addWidget(btn_probe)
+        row.addStretch(1)
+        card_layout.addLayout(row)
+
+        self.manifest_status_lbl = CaptionLabel("尚未探测", card)
+        self.manifest_status_lbl.setWordWrap(True)
+        self.manifest_status_lbl.setStyleSheet("color: #888888;")
+        card_layout.addWidget(self.manifest_status_lbl)
+
+        self._main_layout.addWidget(card)
+
+    def _on_save_manifest_provider(self):
+        if not self._bridge:
+            InfoBar.warning("不可用", "未检测到 Steam，无法写入内核配置", parent=self, position=InfoBarPosition.TOP)
+            return
+        provider = self.manifest_combo.currentText().strip()
+        ok, message = self._bridge.update_kernel_config({"manifest": {"url": provider}})
+        if ok:
+            InfoBar.success("已保存", f"Manifest 服务已切换为 {provider}", parent=self, position=InfoBarPosition.TOP, duration=2500)
+        else:
+            InfoBar.error("保存失败", message, parent=self, position=InfoBarPosition.TOP, duration=5000)
+
+    def _on_probe_manifest(self):
+        if not self._bridge:
+            InfoBar.warning("不可用", "未检测到 Steam", parent=self, position=InfoBarPosition.TOP)
+            return
+        self.manifest_status_lbl.setText("正在探测 wudrm / steamrun / opensteamtool …")
+        self.manifest_status_lbl.setStyleSheet("color: #108ee9;")
+
+        def _probe():
+            proxy = get_system_proxy()
+            results: list[tuple[str, bool, str]] = []
+            for name in self._MANIFEST_PROVIDERS:
+                url = self._MANIFEST_PROBE_URLS[name]
+                t0 = time.time()
+                try:
+                    with httpx.Client(proxy=proxy, timeout=8.0, verify=SSL_VERIFY, follow_redirects=True) as client:
+                        resp = client.get(url)
+                    ms = int((time.time() - t0) * 1000)
+                    usable = resp.status_code in (200, 204, 400, 404)
+                    results.append((name, usable, f"{resp.status_code} ({ms}ms)"))
+                except Exception as exc:  # noqa: BLE001
+                    results.append((name, False, f"连接失败: {type(exc).__name__}"))
+            return results
+
+        def _done(results: list[tuple[str, bool, str]]):
+            text = "；".join(f"{name} {'✅' if ok else '❌'} {detail}" for name, ok, detail in results)
+            self.manifest_status_lbl.setText(text)
+            picked = next((name for name, ok, _ in results if ok), "")
+            if picked:
+                self.manifest_combo.setCurrentText(picked)
+                ok, message = self._bridge.update_kernel_config({"manifest": {"url": picked}})
+                self.manifest_status_lbl.setStyleSheet("color: #52c41a;")
+                if ok:
+                    InfoBar.success("探测完成", f"已自动选择可用服务：{picked}", parent=self, position=InfoBarPosition.TOP, duration=4000)
+                else:
+                    InfoBar.warning("探测完成", f"可用服务：{picked}，但写入配置失败：{message}", parent=self, position=InfoBarPosition.TOP, duration=5000)
+            else:
+                self.manifest_status_lbl.setStyleSheet("color: #f5222d;")
+                InfoBar.warning(
+                    "探测失败",
+                    "三个服务均未返回可用响应，保留当前配置；可稍后重试或检查网络/代理。",
+                    parent=self,
+                    position=InfoBarPosition.TOP,
+                    duration=6000,
+                )
+
+        worker = AsyncWorker(_probe)
+        worker.finished_with_result.connect(_done, Qt.ConnectionType.QueuedConnection)
+        worker.start()
+        self._workers.append(worker)
+
+    # ── 5. 签名镜像与本地缓存 ────────────────────────────────────
+
+    def _build_pattern_mirror_card(self):
+        card = CardWidget(self)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(20, 20, 20, 20)
+        card_layout.setSpacing(14)
+
+        header_layout = QHBoxLayout()
+        icon_lbl = QLabel(self)
+        icon_lbl.setPixmap(FluentIcon.GLOBE.icon().pixmap(24, 24))
+        header_layout.addWidget(icon_lbl)
+        header_layout.addWidget(StrongBodyLabel("签名镜像与本地缓存（[remote]）", card))
+        header_layout.addStretch(1)
+        card_layout.addLayout(header_layout)
+
+        desc = CaptionLabel(
+            "当内置/本地生成的 Steam 签名失效时，内核会按顺序从下列镜像下载。"
+            "每行一个 URL 模板，必须包含 {channel}、{component}、{sha256} 占位符。",
+            card,
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #888888;")
+        card_layout.addWidget(desc)
+
+        self.remote_templates_edit = QPlainTextEdit(card)
+        self.remote_templates_edit.setPlaceholderText(
+            "https://raw.githubusercontent.com/<owner>/<repo>/main/{channel}/{component}/{sha256}.toml"
+        )
+        self.remote_templates_edit.setFixedHeight(96)
+        card_layout.addWidget(self.remote_templates_edit)
+
+        row = QHBoxLayout()
+        self.switch_force_refresh = SwitchButton(card)
+        self.switch_force_refresh.setOnText("强制刷新")
+        self.switch_force_refresh.setOffText("按需刷新")
+        row.addWidget(BodyLabel("缓存策略：", card))
+        row.addWidget(self.switch_force_refresh)
+        row.addSpacing(12)
+        btn_save = PrimaryPushButton(FluentIcon.SAVE, "保存镜像设置", card)
+        btn_save.clicked.connect(self._on_save_remote_settings)
+        row.addWidget(btn_save)
+        btn_sync = PushButton(FluentIcon.SYNC, "立即刷新签名缓存", card)
+        btn_sync.clicked.connect(self._on_sync_patterns)
+        row.addWidget(btn_sync)
+        btn_clear = PushButton(FluentIcon.DELETE, "清除本地签名缓存", card)
+        btn_clear.clicked.connect(self._on_clear_pattern_cache)
+        row.addWidget(btn_clear)
+        row.addStretch(1)
+        card_layout.addLayout(row)
+
+        self.remote_status_lbl = CaptionLabel("", card)
+        self.remote_status_lbl.setWordWrap(True)
+        self.remote_status_lbl.setStyleSheet("color: #888888;")
+        card_layout.addWidget(self.remote_status_lbl)
+
+        self._main_layout.addWidget(card)
+
+    def _on_save_remote_settings(self):
+        if not self._bridge:
+            InfoBar.warning("不可用", "未检测到 Steam，无法写入内核配置", parent=self, position=InfoBarPosition.TOP)
+            return
+        raw = self.remote_templates_edit.toPlainText().splitlines()
+        templates = [line.strip() for line in raw if line.strip()]
+        if not templates:
+            InfoBar.warning("不能为空", "至少保留一个镜像 URL 模板", parent=self, position=InfoBarPosition.TOP)
+            return
+        for template in templates:
+            if not all(token in template for token in ("{channel}", "{component}", "{sha256}")):
+                InfoBar.error("模板无效", f"缺少占位符：{template}", parent=self, position=InfoBarPosition.TOP, duration=5000)
+                return
+        ok, message = self._bridge.update_kernel_config(
+            {
+                "remote": {
+                    "url_template": templates,
+                    "force_refresh": self.switch_force_refresh.isChecked(),
+                }
+            }
+        )
+        if ok:
+            InfoBar.success("已保存", "签名镜像设置已写入 opensteamtool.toml", parent=self, position=InfoBarPosition.TOP, duration=3000)
+        else:
+            InfoBar.error("保存失败", message, parent=self, position=InfoBarPosition.TOP, duration=5000)
+
+    def _on_sync_patterns(self):
+        steam = self._steam_root()
+        if not steam:
+            InfoBar.warning("不可用", "未检测到 Steam 安装目录", parent=self, position=InfoBarPosition.TOP)
+            return
+        self.remote_status_lbl.setText("正在解析 Steam 签名（首次可能需要几十秒）…")
+        self.remote_status_lbl.setStyleSheet("color: #108ee9;")
+
+        def _sync():
+            from core.steam_pattern_sync import SteamPatternSync
+
+            return SteamPatternSync(steam, force=True).sync()
+
+        def _done(result: tuple[bool, str]):
+            ok, message = result
+            self.remote_status_lbl.setText(message)
+            self.remote_status_lbl.setStyleSheet("color: #52c41a;" if ok else "color: #f5222d;")
+            if ok:
+                InfoBar.success("签名缓存就绪", message, parent=self, position=InfoBarPosition.TOP, duration=5000)
+            else:
+                InfoBar.warning("签名解析未完成", message, parent=self, position=InfoBarPosition.TOP, duration=7000)
+
+        worker = AsyncWorker(_sync)
+        worker.finished_with_result.connect(_done, Qt.ConnectionType.QueuedConnection)
+        worker.start()
+        self._workers.append(worker)
+
+    def _on_clear_pattern_cache(self):
+        steam = self._steam_root()
+        if not steam:
+            InfoBar.warning("不可用", "未检测到 Steam 安装目录", parent=self, position=InfoBarPosition.TOP)
+            return
+        try:
+            from core.local_pattern_generator import LocalPatternGenerator
+
+            removed = LocalPatternGenerator(steam).clear_cache()
+            self.remote_status_lbl.setText(f"已清除 {removed} 个本地签名缓存文件，下次启动会重新生成")
+            self.remote_status_lbl.setStyleSheet("color: #52c41a;")
+            InfoBar.success("已清除", f"共删除 {removed} 个缓存文件", parent=self, position=InfoBarPosition.TOP, duration=3000)
+        except Exception as exc:  # noqa: BLE001
+            self.remote_status_lbl.setText(f"清除失败：{exc}")
+            self.remote_status_lbl.setStyleSheet("color: #f5222d;")
+
+    # ── 6. 本地磁盘 Steam 库扫描与第三方工具兼容 ─────────────────────
 
     def _build_scan_card(self):
         card = CardWidget(self)
@@ -631,4 +1010,70 @@ class SettingsPage(ScrollArea):
         saved_key = self._config.get("manifesthub_api_key", MANIFESTHUB_API_KEY)
         if saved_key:
             self.api_key_input.setText(saved_key)
+        self._load_kernel_settings()
+
+    def showEvent(self, event):  # noqa: N802 - Qt 接口
+        super().showEvent(event)
+        self._load_kernel_settings()
+
+    def _load_kernel_settings(self):
+        """从 opensteamtool.toml 载入内核开关（保留用户手工配置）。"""
+        steam = self._steam_root()
+        available = bool(steam)
+        for widget in (
+            self.switch_onlinefix,
+            self.switch_cloud,
+            self.cloud_library_input,
+            self.manifest_combo,
+            self.remote_templates_edit,
+            self.switch_force_refresh,
+        ):
+            widget.setEnabled(available)
+
+        if not available:
+            self.cloud_status_lbl.setText("⚠️ 未检测到 Steam 安装目录，无法读取内核配置")
+            self.cloud_status_lbl.setStyleSheet("color: #fa8c16;")
+            self.remote_status_lbl.setText("未检测到 Steam")
+            return
+
+        try:
+            onlinefix = bool(self._bridge.get_kernel_config("onlinefix", "env_session", True))
+            cloud_enabled = bool(self._bridge.get_kernel_config("cloud", "enabled", False))
+            library = str(self._bridge.get_kernel_config("cloud", "library", "cloud_redirect.dll") or "cloud_redirect.dll")
+            provider = str(self._bridge.get_kernel_config("manifest", "url", "wudrm") or "wudrm")
+            templates = self._bridge.get_kernel_config("remote", "url_template", list(STEAM_PATTERN_URL_TEMPLATES))
+            force_refresh = bool(self._bridge.get_kernel_config("remote", "force_refresh", False))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("读取 opensteamtool.toml 失败: %s", exc)
+            self.remote_status_lbl.setText(f"读取内核配置失败：{exc}")
+            return
+
+        if isinstance(templates, str):
+            templates = [templates]
+        if not isinstance(templates, list) or not templates:
+            templates = list(STEAM_PATTERN_URL_TEMPLATES)
+
+        for switch, value in (
+            (self.switch_onlinefix, onlinefix),
+            (self.switch_cloud, cloud_enabled),
+            (self.switch_force_refresh, force_refresh),
+        ):
+            switch.blockSignals(True)
+            switch.setChecked(value)
+            switch.blockSignals(False)
+
+        self.cloud_library_input.setText(library)
+        self.remote_templates_edit.setPlainText("\n".join(str(item) for item in templates))
+
+        self.manifest_combo.blockSignals(True)
+        self.manifest_combo.setCurrentText(provider)
+        if self.manifest_combo.currentText() != provider:
+            self.manifest_combo.setCurrentIndex(0)
+        self.manifest_combo.blockSignals(False)
+
+        self._refresh_cloud_status()
+        self.remote_status_lbl.setText(
+            "缓存策略：" + ("强制刷新（每次启动重新解析）" if force_refresh else "按需刷新（命中缓存即复用）")
+        )
+        self.remote_status_lbl.setStyleSheet("color: #888888;")
 

@@ -29,6 +29,24 @@
 
 ---
 
+## v1.2.3 修复
+
+- 修复「组件状态」「诊断中心」「Lua 规则」「云存档」「AppID 查询」页面内容区为 0×0、打开后空白/全黑的问题。
+- 为上述页面补充装配回归测试，确保 ScrollArea 内容区始终随窗口自适应。
+
+完整更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+---
+
+## v1.2.2 更新内容
+
+- **诊断中心**：环境快照、按级别/关键词检索日志、崩溃转储扫描，一键导出脱敏诊断包。
+- **AppID 查询与更新检测**：基于本地 `appmanifest` 与 `appinfo.vdf` 查询 Build、Depot 清单完整性和 Lua 规则状态。
+- **D 加密票据**：强制校验 `AppTicket` + `ETicket`，修复 AppID 位于 2 字节对齐偏移时识别失败的问题；提取器继续随安装包内置。
+- 保留并完善 1.2.1 的组件状态中心、Manifest 版本固定、云存档管理与 Lua 规则管理。
+
+---
+
 ## 目录
 
 - [功能概览](#功能概览)
@@ -41,6 +59,7 @@
 - [开发者指南](#开发者指南)
 - [免责声明](#免责声明)
 - [开源许可](#开源许可)
+- [功能参考与实现来源](#功能参考与实现来源)
 
 ---
 
@@ -58,6 +77,13 @@
 | **DLC 全解锁**    | 自动识别游戏关联的 DLC 列表，一键全部入库                             |
 | **Depot 解密密钥** | 自动获取每个加密 Depot 的专属解密密钥，确保游戏内容可正常下载                  |
 | **游戏库管理**      | 卡片式浏览已入库游戏，支持排序、搜索、右键快捷操作（查看/复制/出库）                 |
+| **组件状态中心**     | **新增**：确认三个内核 DLL 是否被 Steam 进程真正加载，区分「文件存在」与「真正生效」 |
+| **Manifest 版本固定** | **新增**：为指定 Depot 固定清单 GID，重新生成 Lua 或一键补全时不会被新版本覆盖 |
+| **云存档管理**      | **新增**：扫描并备份/还原 Steam `userdata` 云存档，支持多账号，删游戏或换号前先留档 |
+| **Lua 规则管理**    | **新增**：同时扫描 `config/lua` 与 `config/stplug-in`，支持启停、冲突检测和规则详情 |
+| **诊断中心**        | **新增**：环境快照、按级别/关键词检索日志、崩溃转储扫描，一键导出脱敏诊断包 |
+| **AppID 查询与更新检测** | **新增**：基于本地 `appmanifest` 与 `appinfo.vdf` 查询 Build、清单完整性和 Lua 状态 |
+| **D 加密票据**      | **新增**：`AppTicket` + `ETicket` 导入/本机提取/手动粘贴，注册表与 Lua 双写；提取器随安装包内置 |
 | **版本自动更新**     | 启动时自动检测 GitHub Release 最新版本，确保始终使用最新版本              |
 
 ---
@@ -179,10 +205,17 @@ Denuvo 游戏需要**由 Valve 私钥签名的真实票据**（`AppTicket` + `ET
 > 想了解底层原理（为什么不能离线破解、参考软件到底怎么做的）请看
 > [DENUVO_REVERSE_ENGINEERING_REPORT.md](DENUVO_REVERSE_ENGINEERING_REPORT.md)。
 
-### 提取工具提示 Steam 未运行？
+### 提取工具提示 Steam 未运行或提取失败？
 
 本机提取依赖 `tools/extract_tickets/extract_tickets.exe` 与已登录的 Steam 会话通信。
-若该文件缺失，可用 `tools/build_extract_tickets.ps1` 重新编译（需要 MinGW-w64）。
+从 **1.2.1** 起该提取器已随安装包内置，无需单独编译。
+
+提取失败通常有两类原因：
+
+* **提示 `ConnectToGlobalUser failed`**：当前登录账号并不拥有该 AppID，Steam 不会为该账号建立会话；
+* **只能拿到 `AppTicket`、`ETicket` 为 `null`（`EResult 15`）**：Denuvo 票据必须由**实际拥有该游戏且已启动过该游戏**的账号生成，家庭共享/借用授权无法替代。
+
+若内置文件缺失，可用 `tools/build_extract_tickets.ps1` 重新编译（需要 MinGW-w64）。
 
 ---
 
@@ -372,6 +405,30 @@ python build_exe.py --no-zip
 ## 开源许可
 
 本项目基于底层引擎 [OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool) 为开源项目。
+
+---
+
+## 功能参考与实现来源
+
+本项目的部分功能参考了以下开源项目的交互方式与实现思路。**参考不等于直接复制**：除明确标注的内核 DLL 外，界面、校验逻辑与本地文件处理均由本项目独立实现。
+
+| 功能 | 参考项目 | 参考内容与本项目的差异 |
+| --- | --- | --- |
+| **组件状态中心** | [G-Yoka/G-OpenSteamTool](https://github.com/G-Yoka/G-OpenSteamTool)、[huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua) | 参考组件安装/加载状态与备用加载器说明；本项目使用 Windows Toolhelp 自行检测 Steam 进程模块，不依赖 `psutil` |
+| **诊断中心** | [G-Yoka/G-OpenSteamTool](https://github.com/G-Yoka/G-OpenSteamTool) | 参考日志筛选、崩溃转储与诊断收集；本项目增加环境快照、配置脱敏和一次性诊断包导出 |
+| **Lua 规则管理** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua)、[G-Yoka/G-OpenSteamTool](https://github.com/G-Yoka/G-OpenSteamTool) | 参考 Lua 启停、批量导入与游戏配置管理；本项目同时扫描 `config/lua` 和 `config/stplug-in`，并增加冲突检测 |
+| **云存档管理** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua) | 参考云存档备份/还原思路；本项目直接处理 Steam `userdata`，不依赖 CloudRedirect DLL |
+| **Manifest 版本固定** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua)、[hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | 参考“固定到当前/最新清单”和 `setManifestid`；本项目用本地 `manifest_pins.json` 保存固定记录，补全时只补空不覆盖 |
+| **D 加密票据** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua)、[hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | 参考票据提取/导入与 `[denuvo] mode`；本项目要求 `AppTicket` + `ETicket` 双票据，并同时写入注册表和 Lua |
+| **AppID 查询与更新检测** | [G-Yoka/G-OpenSteamTool](https://github.com/G-Yoka/G-OpenSteamTool)、[SteamDatabase/SteamAppInfo](https://github.com/SteamDatabase/SteamAppInfo)、[SteamDatabase/ValveKeyValue](https://github.com/SteamDatabase/ValveKeyValue) | 参考本地缓存查询与 `appinfo.vdf` 二进制解析；本项目增加 Build、Depot 清单、Lua 规则和固定记录的联合检测 |
+| **签名表 / 数据通道** | [huanyuejue/steam-monitor](https://github.com/huanyuejue/steam-monitor)、[hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | 采用零种子 pattern/IPC 解析思路；本项目预生成当前 Steam 版本的 TOML 并随包兜底，镜像不可达时仍可启动 |
+| **云存档重定向** | [Selectively11/CloudRedirect](https://github.com/Selectively11/CloudRedirect)（原仓库已归档）、[hazjy/CloudRedirect](https://github.com/hazjy/CloudRedirect) | 仅提供 `[cloud]` 配置、开关和 DLL 检测；本项目**不捆绑** `cloud_redirect.dll`，需要用户自行放置 |
+| **内核 DLL** | [hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | 当前打包的是 ZSteamTool **v1.2.1** 内核；其上游为 [OpenSteam001/OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool)，并参考了 [BetterSteamTools](https://github.com/madoiscool/BetterSteamTools) 的改动 |
+| **桌面端基础** | [yong0512/OpenSteamToolDesktop](https://github.com/yong0512/OpenSteamToolDesktop) | 本项目在其基础上进行功能二次开发与维护 |
+
+> 说明：上述功能均已在真实 Steam 环境中做过页面渲染与数据读取验证；Lua 启停、云存档备份、Manifest 固定、D 加密票据等写入操作会尽量保留原文件或备份。D 加密真实授权仍要求使用**实际拥有该游戏**的账号，详见上方 FAQ。
+>
+> 打包的 ZSteamTool 内核按 **GPL-3.0** 分发，源码与许可证见其仓库；其余参考项目的版权归各自作者所有。
 
 ---
 

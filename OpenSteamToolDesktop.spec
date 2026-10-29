@@ -11,6 +11,9 @@ a = Analysis(
     datas=[
         (str(project_root / 'assets'), 'assets'),
         (str(project_root / 'gui' / 'icon.ico'), 'gui'),
+        (str(project_root / 'resources' / 'fallback_dlls'), 'resources/fallback_dlls'),
+        (str(project_root / 'resources' / 'steam_patterns'), 'resources/steam_patterns'),
+        (str(project_root / 'tools' / 'extract_tickets' / 'extract_tickets.exe'), 'tools/extract_tickets'),
     ],
     hiddenimports=[
         'PyQt6.QtWidgets',

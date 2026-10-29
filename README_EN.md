@@ -29,6 +29,24 @@ Go to the [Releases](https://github.com/kid9547/OpenSteamToolDesktop/releases) p
 
 ---
 
+## What's New in v1.2.3
+
+- Fixed the blank/all-black content area on the **Component Status**, **Diagnostics Center**, **Lua Rules**, **Cloud Saves** and **AppID Lookup** pages (their content widget was 0×0).
+- Added a GUI assembly regression test so these scroll pages always resize their content with the window.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+
+---
+
+## What's New in v1.2.2
+
+- **Diagnostics Center**: environment snapshot, log search by level/keyword, crash-dump scan and one-click redacted diagnostic zip export.
+- **AppID Lookup & Update Check**: local `appmanifest` + `appinfo.vdf` lookup for build, depot-manifest completeness and Lua rule status.
+- **Denuvo tickets**: both `AppTicket` and `ETicket` are now required and validated; fixed AppID detection when the embedded AppID sits at a 2-byte-aligned offset. The ticket extractor remains bundled in the release.
+- All 1.2.1 features remain available: component status, manifest pinning, cloud-save manager and Lua rule manager.
+
+---
+
 ## Table of Contents
 
 - [Features](#features)
@@ -41,6 +59,7 @@ Go to the [Releases](https://github.com/kid9547/OpenSteamToolDesktop/releases) p
 - [Developer Guide](#developer-guide)
 - [Disclaimer](#disclaimer)
 - [License](#license)
+- [Reference Projects & Feature Provenance](#reference-projects--feature-provenance)
 
 ---
 
@@ -56,6 +75,13 @@ Go to the [Releases](https://github.com/kid9547/OpenSteamToolDesktop/releases) p
 | **Full DLC Unlock**       | Automatically detects all DLCs associated with a game and unlocks them in one click                 |
 | **Depot Decryption Keys** | Automatically retrieves decryption keys for each encrypted Depot to enable normal downloads         |
 | **Game Library Manager**  | Card-style browsing with sorting, search, and right-click actions (view/copy/remove)                |
+| **Component Status**      | **New**: Verifies that all three kernel DLLs are actually loaded by Steam, not merely present on disk |
+| **Manifest Pinning**      | **New**: Pin a depot to a specific manifest GID so Lua regeneration or auto-completion cannot overwrite it |
+| **Cloud Save Manager**    | **New**: Scan, back up and restore Steam `userdata` cloud saves for multiple accounts                |
+| **Lua Rule Manager**      | **New**: Scans both `config/lua` and `config/stplug-in`, with enable/disable, conflict detection and details |
+| **Diagnostics Center**    | **New**: Environment snapshot, log search by level/keyword, crash-dump scan and redacted diagnostic zip export |
+| **AppID Lookup & Update Check** | **New**: Local `appmanifest` + `appinfo.vdf` lookup for build, manifest completeness and Lua status |
+| **Denuvo Tickets**        | **New**: Import, extract or paste `AppTicket` + `ETicket`, written to both registry and Lua; extractor bundled in the release |
 | **Auto Update**           | Checks GitHub Releases on startup and guides you to the latest version                              |
 
 ---
@@ -341,6 +367,32 @@ This project is for **educational and research purposes only**. Please adhere to
 ## License
 
 This project is powered by the [OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool) engine.
+
+---
+
+## Reference Projects & Feature Provenance
+
+Some features were inspired by the interaction and implementation ideas of the following open-source projects. **Reference does not mean direct copying**: except for the explicitly bundled kernel DLLs, the UI, validation logic and local file handling are implemented independently by this project.
+
+| Feature | Reference project(s) | What was referenced / how this project differs |
+| --- | --- | --- |
+| **Component Status** | [G-Yoka/G-OpenSteamTool](https://github.com/G-Yoka/G-OpenSteamTool), [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua) | Component install/load state and fallback-loader notes; this project uses Windows Toolhelp to inspect Steam process modules instead of `psutil` |
+| **Diagnostics Center** | [G-Yoka/G-OpenSteamTool](https://github.com/G-Yoka/G-OpenSteamTool) | Log filtering, crash dumps and diagnostic collection; this project adds an environment snapshot, config redaction and one-click diagnostic zip export |
+| **Lua Rule Manager** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua), [G-Yoka/G-OpenSteamTool](https://github.com/G-Yoka/G-OpenSteamTool) | Lua enable/disable, bulk import and per-game configuration; this project scans both `config/lua` and `config/stplug-in` and adds conflict detection |
+| **Cloud Save Manager** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua) | Cloud-save backup/restore ideas; this project works directly on Steam `userdata` and does not require the CloudRedirect DLL |
+| **Manifest Pinning** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua), [hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | “Pin to current/latest manifest” and `setManifestid`; this project stores pins in local `manifest_pins.json` and never overwrites existing entries during auto-completion |
+| **Denuvo Tickets** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua), [hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | Ticket extraction/import and `[denuvo] mode`; this project requires both `AppTicket` and `ETicket` and writes them to both the registry and Lua |
+| **AppID Lookup & Update Check** | [G-Yoka/G-OpenSteamTool](https://github.com/G-Yoka/G-OpenSteamTool), [SteamDatabase/SteamAppInfo](https://github.com/SteamDatabase/SteamAppInfo), [SteamDatabase/ValveKeyValue](https://github.com/SteamDatabase/ValveKeyValue) | Local cache lookup and `appinfo.vdf` binary parsing; this project adds combined build, depot-manifest, Lua and pin checks |
+| **Signature Tables / Data Channels** | [huanyuejue/steam-monitor](https://github.com/huanyuejue/steam-monitor), [hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | Zero-seed pattern/IPC resolution; this project ships pre-generated TOMLs for the current Steam build as a fallback when mirrors are unreachable |
+| **Cloud Save Redirect** | [Selectively11/CloudRedirect](https://github.com/Selectively11/CloudRedirect) (archived), [hazjy/CloudRedirect](https://github.com/hazjy/CloudRedirect) | Only `[cloud]` configuration, toggle and DLL detection are provided; this project **does not bundle** `cloud_redirect.dll` |
+| **Kernel DLLs** | [hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | The bundled kernel is ZSteamTool **v1.2.1**; its upstream is [OpenSteam001/OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool), with changes inspired by [BetterSteamTools](https://github.com/madoiscool/BetterSteamTools) |
+| **Desktop Base** | [yong0512/OpenSteamToolDesktop](https://github.com/yong0512/OpenSteamToolDesktop) | This project is a secondary development based on that desktop application |
+
+> Note: All features above have been verified for page rendering and local data reading against a real Steam installation. Write operations such as Lua toggling, cloud-save backup, manifest pinning and Denuvo ticket import keep original files or backups wherever possible. Real Denuvo authorization still requires an account that **actually owns the game**; see the FAQ above.
+>
+> The bundled ZSteamTool kernel is distributed under **GPL-3.0**; see its repository for source and license. All other reference projects remain copyright of their respective authors.
+
+---
 
 ## Acknowledgments & Project Origin
 

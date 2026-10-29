@@ -135,9 +135,10 @@ class TestDLLManager:
     # ===== 测试 2.10: 解析版本号 =====
     def test_parse_version(self, manager):
         """测试 2.10: 版本号解析为元组"""
-        assert manager._parse_version("v1.2.3") == (1, 2, 3)
-        assert manager._parse_version("1.2.3") == (1, 2, 3)
-        assert manager._parse_version("invalid") == (0, 0, 0)
+        assert manager._parse_version("v1.2.3") == (1, 2, 3, 0)
+        assert manager._parse_version("1.2.3") == (1, 2, 3, 0)
+        assert manager._parse_version("v1.2.3.4") == (1, 2, 3, 4)
+        assert manager._parse_version("invalid") == (0, 0, 0, 0)
 
     # ===== 测试 2.11: 检查更新 (有新版本) =====
     def test_check_for_updates_new_version(self, manager):
@@ -246,7 +247,7 @@ class TestDLLManager:
         version_info = {
             "version": "v1.2.3",
             "assets": [
-                {"name": "test.zip", "browser_download_url": "url"},
+                {"name": "ZSteamTool-v1.2.3.zip", "browser_download_url": "url"},
             ],
         }
 
@@ -263,7 +264,7 @@ class TestDLLManager:
         version_info = {
             "version": "v1.2.3",
             "assets": [
-                {"name": "test.zip", "browser_download_url": "url"},
+                {"name": "ZSteamTool-v1.2.3.zip", "browser_download_url": "url"},
             ],
         }
 
@@ -334,6 +335,82 @@ class TestDLLManager:
         result = manager.get_dll_path()
         assert result == Path()
 
+    # ===== 测试 2.21a: 旧版 OpenSteam001 内核识别 =====
+    def test_legacy_kernel_detected_without_marker(self, manager):
+        """没有 kernel.json 的 1.4.x 目录应识别为旧版内核。"""
+        legacy_dir = manager.get_version_dir("v1.4.8")
+        legacy_dir.mkdir(parents=True)
+        assert manager.is_legacy_kernel(legacy_dir) is True
+
+        zsteam_dir = manager.get_version_dir("v1.2.1")
+        zsteam_dir.mkdir(parents=True)
+        assert manager.is_legacy_kernel(zsteam_dir) is False
+
+    def test_kernel_marker_repo_detection(self, manager):
+        """kernel.json 记录其它仓库时应识别为旧版。"""
+        version_dir = manager.get_version_dir("v1.2.3")
+        version_dir.mkdir(parents=True)
+        (version_dir / "kernel.json").write_text(
+            json.dumps({"repo": "OpenSteam001/OpenSteamTool", "version": "v1.2.3"}),
+            encoding="utf-8",
+        )
+        assert manager.is_legacy_kernel(version_dir) is True
+
+        (version_dir / "kernel.json").write_text(
+            json.dumps({"repo": "hazjy/ZSteamTool", "version": "v1.2.3"}),
+            encoding="utf-8",
+        )
+        assert manager.is_legacy_kernel(version_dir) is False
+
+    def test_get_dll_path_skips_legacy_kernel(self, manager):
+        """旧版内核目录不应作为默认 DLL 源。"""
+        version_dir = manager.get_version_dir("v1.4.8")
+        version_dir.mkdir(parents=True)
+        (version_dir / "OpenSteamTool.dll").write_bytes(b"fake")
+        (version_dir / "dwmapi.dll").write_bytes(b"fake")
+        (version_dir / "xinput1_4.dll").write_bytes(b"fake")
+        manager.set_current_version("v1.4.8")
+
+        assert manager.get_dll_path() == Path()
+        assert manager.get_dll_path(include_legacy=True) == version_dir
+
+    def test_check_for_updates_migrates_legacy_kernel(self, manager):
+        """远程版本号更低时也要提示迁移旧版内核。"""
+        version_dir = manager.get_version_dir("v1.4.8")
+        version_dir.mkdir(parents=True)
+        (version_dir / "OpenSteamTool.dll").write_bytes(b"fake")
+        (version_dir / "dwmapi.dll").write_bytes(b"fake")
+        (version_dir / "xinput1_4.dll").write_bytes(b"fake")
+        manager.set_current_version("v1.4.8")
+        manager._github.get_latest_release_info.return_value = {
+            "version": "v1.2.1",
+            "assets": [],
+        }
+
+        update_available, msg, version_info = manager.check_for_updates()
+
+        assert update_available is True
+        assert "旧版内核" in msg
+        assert version_info["version"] == "v1.2.1"
+
+    def test_install_bundled_kernel_writes_marker(self, manager, tmp_path, monkeypatch):
+        """内置内核安装后应写入 kernel.json 并设为当前版本。"""
+        bundled = tmp_path / "bundled"
+        bundled.mkdir()
+        for dll in ("OpenSteamTool.dll", "dwmapi.dll", "xinput1_4.dll"):
+            (bundled / dll).write_bytes(b"fake")
+        monkeypatch.setattr(manager, "get_bundled_kernel_dir", lambda: bundled)
+
+        success, msg = manager.install_bundled_kernel("v1.2.1")
+
+        assert success is True
+        assert manager.get_current_version() == "v1.2.1"
+        installed = manager.get_version_dir("v1.2.1")
+        assert (installed / "kernel.json").is_file()
+        assert (installed / "OpenSteamTool.dll").is_file()
+        info = json.loads((installed / "kernel.json").read_text(encoding="utf-8"))
+        assert info["repo"] == "hazjy/ZSteamTool"
+
     # ===== 测试 2.22: 检查 DLL 版本 (文件不存在) =====
     def test_check_dll_version_file_not_exists(self, manager):
         """测试 2.22: DLL 文件不存在时返回 'unknown'"""
@@ -352,6 +429,6 @@ class TestDLLManager:
         # 无效目录名
         assert manager._is_valid_version_dir("v1.2") is False  # 只有 2 段
         assert manager._is_valid_version_dir("invalid") is False
-        assert manager._is_valid_version_dir("v1.2.3.4") is False  # 4 段
+        assert manager._is_valid_version_dir("v1.2.3.4") is True  # 4 段
         assert manager._is_valid_version_dir("not_a_version") is False
         assert manager._is_valid_version_dir("") is False

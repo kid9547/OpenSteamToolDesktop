@@ -17,6 +17,8 @@ import subprocess
 from dataclasses import dataclass
 from enum import Enum, auto
 
+from core.local_pattern_generator import lua_dirs
+from core.opensteamtool_config import get_value, merge_config, update_config
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -156,48 +158,86 @@ class DLLInjector:
         )
 
     def deploy_opensteamtool_config(self) -> tuple[bool, str]:
-        """部署 opensteamtool.toml 配置文件到 Steam 根目录
+        """部署 ``opensteamtool.toml``（保留用户已有配置，只补缺失项）
 
-        确保 manifest 请求上游指向可用的 wudrm，避免默认 opensteamtool.com 返回 403 Forbidden 导致
-        Steam 报告 'Failed to get manifest request code, Access Denied' 及网络下载错误。
-        同时配置 [lua] paths 包含 config/lua 与 config/stplug-in，保证兼容性。
+        与旧版不同，这里不再整文件覆盖：用户手工改过的 manifest 超时、
+        stats、presence、remote 镜像等设置都会保留。缺失的 ``[lua]``、
+        ``[denuvo]``、``[onlinefix]``、``[cloud]``、``[remote]`` 段会自动补齐，
+        首次改写前会生成 ``opensteamtool.toml.bak``。
         """
         if not self._steam_path or not os.path.isdir(self._steam_path):
             return False, "Steam 目录未找到"
 
-        config_path = os.path.join(self._steam_path, self.CONFIG_FILE)
-        stplugin_dir = os.path.join(self._steam_path, "config", "stplug-in")
-        lua_dir = os.path.join(self._steam_path, "config", "lua")
-        os.makedirs(stplugin_dir, exist_ok=True)
-        os.makedirs(lua_dir, exist_ok=True)
-        stplugin_posix = stplugin_dir.replace("\\", "/")
-        lua_posix = lua_dir.replace("\\", "/")
-        lua_section = f'\n[lua]\npaths = ["{lua_posix}", "{stplugin_posix}"]\n'
+        ok, message = merge_config(self._steam_path, lua_dirs=lua_dirs(self._steam_path))
+        if ok:
+            logger.info("Deployed %s via merge: %s", self.CONFIG_FILE, message)
+        else:
+            logger.warning("Failed to deploy %s: %s", self.CONFIG_FILE, message)
+        return ok, message
 
-        content = (
-            "# opensteamtool.toml — OpenSteamTool configuration\n"
-            "# Managed by OpenSteamToolDesktop\n\n"
-            "[log]\n"
-            'level = "info"\n\n'
-            "[manifest]\n"
-            "# 默认 opensteamtool.com 存在 Cloudflare 拦截 (403)，因此配置国内/国际通用的 wudrm\n"
-            'url = "wudrm"\n'
-            "timeout_resolve_ms = 5000\n"
-            "timeout_connect_ms = 5000\n"
-            "timeout_send_ms    = 10000\n"
-            "timeout_recv_ms    = 10000\n\n"
-            "[stats]\n"
-            "enable_api = true\n"
-            f"{lua_section}"
-        )
-        try:
-            with open(config_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            logger.info(f"Deployed {self.CONFIG_FILE} with wudrm manifest provider")
-            return True, f"{self.CONFIG_FILE} 部署成功（已配置 wudrm 清单解析服务）"
-        except Exception as e:
-            logger.warning(f"Failed to deploy {self.CONFIG_FILE}: {e}")
-            return False, f"部署 {self.CONFIG_FILE} 失败: {e}"
+    # ── 内核配置快捷入口（设置页 / D 加密页使用）────────────────
+
+    def get_config_value(self, section: str, key: str, default=None):
+        if not self._steam_path:
+            return default
+        return get_value(self._steam_path, section, key, default)
+
+    def update_denuvo_mode(self, mode: str) -> tuple[bool, str]:
+        """切换 ``[denuvo] mode``（normal / compat）。"""
+        mode = (mode or "").strip().lower()
+        if mode not in ("normal", "compat"):
+            return False, "denuvo.mode 只能是 normal 或 compat"
+        return self._update_section("denuvo", {"mode": mode})
+
+    def update_onlinefix_env_session(self, enabled: bool) -> tuple[bool, str]:
+        """切换 ``[onlinefix] env_session``。"""
+        return self._update_section("onlinefix", {"env_session": bool(enabled)})
+
+    def update_cloud_settings(self, *, enabled: bool | None = None, library: str | None = None) -> tuple[bool, str]:
+        """更新 ``[cloud]`` 云存档重定向设置。"""
+        values: dict[str, object] = {}
+        if enabled is not None:
+            values["enabled"] = bool(enabled)
+        if library is not None:
+            values["library"] = str(library).strip() or "cloud_redirect.dll"
+        if not values:
+            return True, "没有需要更新的云存档设置"
+        return self._update_section("cloud", values)
+
+    def update_remote_settings(
+        self,
+        *,
+        url_templates: list[str] | None = None,
+        force_refresh: bool | None = None,
+    ) -> tuple[bool, str]:
+        """更新 ``[remote]`` 镜像模板与强制刷新开关。"""
+        values: dict[str, object] = {}
+        if url_templates is not None:
+            cleaned = [item.strip() for item in url_templates if item and item.strip()]
+            for template in cleaned:
+                if not all(token in template for token in ("{channel}", "{component}", "{sha256}")):
+                    return False, f"镜像模板缺少占位符：{template}"
+            values["url_template"] = cleaned
+        if force_refresh is not None:
+            values["force_refresh"] = bool(force_refresh)
+        if not values:
+            return True, "没有需要更新的镜像设置"
+        return self._update_section("remote", values)
+
+    def update_manifest_provider(self, provider: str) -> tuple[bool, str]:
+        """更新 ``[manifest] url``（opensteamtool / wudrm / steamrun）。"""
+        provider = (provider or "").strip()
+        if not provider:
+            return False, "manifest.url 不能为空"
+        return self._update_section("manifest", {"url": provider})
+
+    def _update_section(self, section: str, values: dict[str, object]) -> tuple[bool, str]:
+        if not self._steam_path or not os.path.isdir(self._steam_path):
+            return False, "Steam 目录未找到"
+        ok, message = update_config(self._steam_path, {section: values})
+        if ok:
+            logger.info("Updated opensteamtool.toml [%s]: %s", section, values)
+        return ok, message
 
     def deploy_manifest_lua(self) -> tuple[bool, str]:
         """部署 manifest.lua 到 <steam>/config/lua 与 <steam>/config/stplug-in 目录
@@ -236,6 +276,14 @@ class DLLInjector:
             for target_dir in (lua_dir, stplugin_dir):
                 os.makedirs(target_dir, exist_ok=True)
                 manifest_lua_path = os.path.join(target_dir, self.MANIFEST_LUA_FILE)
+                if os.path.isfile(manifest_lua_path):
+                    try:
+                        existing = open(manifest_lua_path, "r", encoding="utf-8", errors="replace").read()
+                    except OSError:
+                        existing = ""
+                    if "Auto-generated by OpenSteamToolDesktop" not in existing:
+                        logger.info("Keeping user-provided %s in %s", self.MANIFEST_LUA_FILE, target_dir)
+                        continue
                 with open(manifest_lua_path, "w", encoding="utf-8") as f:
                     f.write(content)
             logger.info(f"Deployed {self.MANIFEST_LUA_FILE} with wudrm/steamrun resolvers to lua and stplug-in")

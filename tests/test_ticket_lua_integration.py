@@ -188,6 +188,7 @@ def test_apply_ticket_bundle_rejects_empty_ticket(tmp_path):
     assert manager.ticket_status_from_lua("5") == {
         "has_app_ticket": False,
         "has_eticket": False,
+        "has_steam_id": False,
     }
 
 
@@ -213,14 +214,17 @@ def test_ticket_status_from_lua_reports_both_flags(tmp_path):
     assert manager.ticket_status_from_lua("12") == {
         "has_app_ticket": True,
         "has_eticket": False,
+        "has_steam_id": False,
     }
     assert manager.ticket_status_from_lua("13") == {
         "has_app_ticket": True,
         "has_eticket": True,
+        "has_steam_id": False,
     }
     assert manager.ticket_status_from_lua("404") == {
         "has_app_ticket": False,
         "has_eticket": False,
+        "has_steam_id": False,
     }
 
 

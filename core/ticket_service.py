@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core import credential_store
+from core.app_paths import app_data_dir, bundled_tool
 from core.credential_store import (
     CredentialError,
     TicketBundle,
@@ -275,25 +276,35 @@ def _app_id_from_sibling(path: Path) -> str:
 
 
 # ── 本机提取 ──────────────────────────────────────────────────
-TOOL_DIR = Path(__file__).resolve().parent.parent / "tools" / "extract_tickets"
-TOOL_EXE = TOOL_DIR / "extract_tickets.exe"
+# 打包后工具位于 <bundle>/tools/extract_tickets/，开发模式位于项目根目录。
+TOOL_EXE = bundled_tool("extract_tickets", "extract_tickets.exe")
+_DEV_TOOL_EXE = Path(__file__).resolve().parent.parent / "tools" / "extract_tickets" / "extract_tickets.exe"
+# 提取器会写 <cwd>/<appid>/，必须使用可写目录，不能写进只读的打包资源目录。
+OUTPUT_ROOT = app_data_dir() / "tickets"
+
+
+def _tool_exe() -> Path:
+    if TOOL_EXE.is_file():
+        return TOOL_EXE
+    return _DEV_TOOL_EXE
 
 
 def extractor_available() -> bool:
-    """本机提取工具是否可用。"""
-    return TOOL_EXE.is_file()
+    """本机提取工具是否可用（打包资源或开发目录）。"""
+    return _tool_exe().is_file()
 
 
 def extractor_path() -> str:
-    return str(TOOL_EXE)
+    return str(_tool_exe())
 
 
 def extract_local(app_id: str, timeout: float = 60.0) -> TicketBundle:
     """在拥有该游戏的正版账号机器上提取票据。
 
     调用 ``extract_tickets.exe <appid>``，它从注册表读取 Steam 路径、加载
-    ``steamclient64.dll`` 并与已登录的 Steam 会话通信，随后在工具目录下写出
-    ``<appid>/appticket.bin``、``<appid>/eticket.bin``、``<appid>/tickets.txt``。
+    ``steamclient64.dll`` 并与已登录的 Steam 会话通信，随后在
+    ``%LOCALAPPDATA%/OpenSteamToolDesktop/tickets/<appid>/`` 下写出
+    ``appticket.bin``、``eticket.bin``、``tickets.txt``。
 
     Args:
         app_id: 目标 AppID（必须为该账号已拥有的游戏）。
@@ -305,17 +316,27 @@ def extract_local(app_id: str, timeout: float = 60.0) -> TicketBundle:
     Raises:
         CredentialError: 工具缺失、Steam 未运行/未登录、该账号不拥有该游戏等。
     """
-    if not extractor_available():
-        raise CredentialError(f"未找到提取工具: {TOOL_EXE}")
+    exe = _tool_exe()
+    if not extractor_available() or not exe.is_file():
+        raise CredentialError(f"未找到提取工具: {exe}")
     app_id = str(app_id)
     if not app_id.isdigit():
         raise CredentialError(f"AppID 非法: {app_id!r}")
 
+    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out_dir = OUTPUT_ROOT / app_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for stale in ("tickets.txt", "appticket.bin", "eticket.bin"):
+        try:
+            (out_dir / stale).unlink(missing_ok=True)
+        except OSError:
+            pass
+
     logger.info("开始本机提取票据 appid=%s", app_id)
     try:
         proc = subprocess.run(
-            [str(TOOL_EXE), app_id],
-            cwd=str(TOOL_DIR),
+            [str(exe), app_id],
+            cwd=str(OUTPUT_ROOT),
             input=b"\r\n",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -330,7 +351,6 @@ def extract_local(app_id: str, timeout: float = 60.0) -> TicketBundle:
     output = proc.stdout.decode("utf-8", "replace") if proc.stdout else ""
     logger.debug("extract_tickets 输出:\n%s", output)
 
-    out_dir = TOOL_DIR / app_id
     candidates: list[Path] = []
     if (out_dir / "tickets.txt").is_file():
         candidates.append(out_dir / "tickets.txt")
@@ -351,7 +371,10 @@ def _diagnose_extract_failure(output: str) -> str:
     if "createsteampipe failed" in lowered:
         return "Steam 未运行。请先启动并登录 Steam，再重试提取。"
     if "connecttoglobaluser failed" in lowered:
-        return "Steam 没有已登录的用户，请登录后再试。"
+        return (
+            "Steam 没有已登录的用户，或当前账号不拥有该 AppID。"
+            "请确认已登录拥有该游戏的账号后再试。"
+        )
     if "failed to load" in lowered:
         return "加载 steamclient64.dll 失败，请确认 Steam 安装完整。"
     if "failed to find steam install path" in lowered:
@@ -444,12 +467,8 @@ class TicketMintClient:
 
 
 def mint_supported_by_runtime() -> bool:
-    """运行时（OpenSteamTool.dll）是否支持 ``seteticketurl`` 在线现签。
-
-    只有 BetterSteamTools 分支带该函数；官方 OpenSteamTool 需要票据本身就已
-    缓存在注册表中（由本项目的导入/提取流程写入）。
-    """
-    return False  # 官方 v1.4.8 无 seteticketurl，保留钩子便于将来切换分支 DLL
+    """运行时（ZSteamTool 1.2.x）支持 ``seteticketurl`` 在线现签。"""
+    return True  # ZSteamTool v1.2.x 的 LuaConfig 注册了 seteticketurl
 
 
 def lua_mint_url_line(url: str) -> str:
@@ -516,5 +535,5 @@ def find_stray_ticket_files(root: str | Path, limit: int = 200) -> list[str]:
 
 
 def default_import_dir() -> str:
-    """默认扫描目录：工具的 AppID 输出目录。"""
-    return str(TOOL_DIR)
+    """默认扫描目录：提取器输出目录（可写的应用数据目录）。"""
+    return str(OUTPUT_ROOT)

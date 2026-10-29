@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 
 from PyQt6.QtCore import QObject, pyqtSignal, QThread
 
+from config import OPENSTEAMTOOL_KERNEL_REPO, OPENSTEAMTOOL_KERNEL_VERSION
+from core.app_paths import resource_root
 from utils.logger import setup_logger
 from utils.path_manager import PathManager
 from core.github_releases import GitHubReleases, get_latest_release_info
@@ -27,8 +30,12 @@ logger = setup_logger(__name__)
 # DLL 目录名称
 DLL_DIR_NAME: str = "DLL"
 
-# 版本号正则（匹配 v1.2.3 或 1.2.3）
-VERSION_PATTERN: str = r"v?(\d+)\.(\d+)\.(\d+)$"
+# 内核来源标记：记录该版本目录由哪个仓库安装，用于识别旧版
+# OpenSteam001/OpenSteamTool 内核（版本号 1.3+/1.4+，已停更）。
+KERNEL_MARKER: str = "kernel.json"
+
+# 版本号正则（匹配 v1.2.3 / 1.2.3 / v1.2.3.4）
+VERSION_PATTERN: str = r"v?(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$"
 
 
 class DLLManager(QObject):
@@ -85,6 +92,97 @@ class DLLManager(QObject):
         if not version.startswith("v"):
             version = f"v{version}"
         return self._dll_dir / version
+
+    # ── 内核来源标记与旧版识别 ────────────────────────────────
+
+    def get_kernel_info(self, version_dir: Path) -> Optional[dict]:
+        """读取版本目录中的 ``kernel.json``（来源仓库/版本）。
+
+        旧版应用安装的 OpenSteam001 内核没有该文件，返回 ``None``。
+        """
+        marker = version_dir / KERNEL_MARKER
+        if not marker.is_file():
+            return None
+        try:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("无法读取内核标记 %s: %s", marker, exc)
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _write_kernel_marker(self, version_dir: Path, version: str) -> None:
+        """写入内核来源标记，供后续升级/迁移判断。"""
+        try:
+            (version_dir / KERNEL_MARKER).write_text(
+                json.dumps(
+                    {"repo": OPENSTEAMTOOL_KERNEL_REPO, "version": version},
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("写入内核标记失败 %s: %s", version_dir, exc)
+
+    def is_legacy_kernel(self, version_dir: Path | None = None) -> bool:
+        """判断版本目录是否是已停更的 OpenSteam001 内核。
+
+        判定规则：
+        1. 有 ``kernel.json`` 且仓库不是当前内核仓库 → 旧版；
+        2. 没有标记文件时，按版本号推断：OpenSteam001 使用 1.3+/1.4+
+           版本号，而 ZSteamTool 使用 1.2.x。
+        """
+        if version_dir is None:
+            current = self.get_current_version() or self.get_latest_local_version()
+            if not current:
+                return False
+            version_dir = self.get_version_dir(current)
+        if not version_dir.is_dir():
+            return False
+
+        info = self.get_kernel_info(version_dir)
+        if info is not None:
+            repo = str(info.get("repo") or "").strip()
+            if repo:
+                return repo.lower() != OPENSTEAMTOOL_KERNEL_REPO.lower()
+
+        return self._parse_version(version_dir.name) >= (1, 3, 0, 0)
+
+    def get_bundled_kernel_dir(self) -> Optional[Path]:
+        """返回随程序分发的内置内核目录（ZSteamTool Release DLL）。"""
+        candidates = [
+            resource_root() / "resources" / "fallback_dlls",
+            Path(__file__).resolve().parent.parent / "resources" / "fallback_dlls",
+        ]
+        for candidate in candidates:
+            if self._has_required_dlls(candidate, check_integrity=False):
+                return candidate
+        return None
+
+    def install_bundled_kernel(self, version: str = "") -> Tuple[bool, str]:
+        """把内置内核复制到受管版本目录并设为当前版本。
+
+        用于旧版内核迁移：即使 GitHub 不可达，也能离线切换到
+        ZSteamTool v1.2.x。
+        """
+        version = version or OPENSTEAMTOOL_KERNEL_VERSION
+        bundled = self.get_bundled_kernel_dir()
+        if bundled is None:
+            return False, "内置内核文件缺失，无法离线安装"
+
+        version_dir = self.get_version_dir(version)
+        try:
+            version_dir.mkdir(parents=True, exist_ok=True)
+            for dll_name in DLLInjector.ALL_DLLS:
+                shutil.copy2(bundled / dll_name, version_dir / dll_name)
+            (version_dir / "version.txt").write_text(version, encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("安装内置内核失败: %s", exc)
+            return False, f"安装内置内核失败：{exc}"
+
+        self._write_kernel_marker(version_dir, version)
+        self.set_current_version(version)
+        logger.info("Installed bundled kernel %s from %s", version, bundled)
+        return True, f"已安装内置内核 {version}（{OPENSTEAMTOOL_KERNEL_REPO}）"
 
     def check_dll_version(self, dll_path: Path) -> str:
         """获取 DLL 文件的版本号
@@ -191,8 +289,12 @@ class DLLManager(QObject):
             logger.error(f"Failed to set current version: {e}")
             return False
 
-    def get_dll_path(self) -> Path | None:
+    def get_dll_path(self, include_legacy: bool = False) -> Path | None:
         """获取当前应使用的 DLL 路径（目录）
+
+        Args:
+            include_legacy: 为 True 时允许返回已停更的旧版内核目录
+                （仅在没有任何可用的新版内核时作为兜底）。
 
         Returns:
             DLL 目录路径（包含 3 个 DLL 的目录），如果未找到则返回 None
@@ -201,14 +303,22 @@ class DLLManager(QObject):
         current_ver = self.get_current_version()
         if current_ver:
             ver_dir = self.get_version_dir(current_ver)
-            if ver_dir.exists() and self._has_required_dlls(ver_dir):
+            if (
+                ver_dir.exists()
+                and self._has_required_dlls(ver_dir)
+                and (include_legacy or not self.is_legacy_kernel(ver_dir))
+            ):
                 return ver_dir
 
         # 回退：使用最新本地版本
         latest_ver = self.get_latest_local_version()
         if latest_ver:
             ver_dir = self.get_version_dir(latest_ver)
-            if ver_dir.exists() and self._has_required_dlls(ver_dir):
+            if (
+                ver_dir.exists()
+                and self._has_required_dlls(ver_dir)
+                and (include_legacy or not self.is_legacy_kernel(ver_dir))
+            ):
                 return ver_dir
 
         # 未找到任何版本
@@ -289,29 +399,68 @@ class DLLManager(QObject):
             (是否有更新, 消息, 最新版本信息)
         """
         logger.info("Checking for DLL updates...")
-        
+
+        # 先识别受管的旧版 OpenSteam001 内核（1.3+/1.4+，上游已停更）。
+        # 这类内核即使版本号更高，也不能继续使用。
+        current_version = self.get_current_version() or self.get_latest_local_version()
+        legacy_version = ""
+        if current_version:
+            current_dir = self.get_version_dir(current_version)
+            if current_dir.exists() and self.is_legacy_kernel(current_dir):
+                legacy_version = current_version
+
         # 获取远程最新版本
         remote_info = self._github.get_latest_release_info()
         if not remote_info:
+            if legacy_version:
+                return (
+                    True,
+                    f"检测到旧版内核 {legacy_version}（OpenSteam001 上游已停更），"
+                    f"可离线切换到内置 {OPENSTEAMTOOL_KERNEL_REPO} {OPENSTEAMTOOL_KERNEL_VERSION}",
+                    {"version": OPENSTEAMTOOL_KERNEL_VERSION, "assets": [], "source": "bundled"},
+                )
             return False, "无法获取远程版本信息", None
-        
+
         remote_version = remote_info.get("version", "")
         if not remote_version:
+            if legacy_version:
+                return (
+                    True,
+                    f"检测到旧版内核 {legacy_version}（OpenSteam001 上游已停更），"
+                    f"可离线切换到内置 {OPENSTEAMTOOL_KERNEL_REPO} {OPENSTEAMTOOL_KERNEL_VERSION}",
+                    {"version": OPENSTEAMTOOL_KERNEL_VERSION, "assets": [], "source": "bundled"},
+                )
             return False, "远程版本信息不完整", None
-        
+
+        # 旧版内核必须迁移：不按版本号大小比较，优先使用内置/远程新版内核。
+        if legacy_version:
+            target_version = remote_version
+            if self._compare_versions(OPENSTEAMTOOL_KERNEL_VERSION, remote_version) > 0:
+                target_version = OPENSTEAMTOOL_KERNEL_VERSION
+                remote_info = {"version": target_version, "assets": [], "source": "bundled"}
+            logger.info(
+                "Legacy kernel %s detected, migrating to %s", legacy_version, target_version
+            )
+            return (
+                True,
+                f"检测到旧版内核 {legacy_version}（OpenSteam001 上游已停更），"
+                f"建议切换到 {OPENSTEAMTOOL_KERNEL_REPO} {target_version}",
+                remote_info,
+            )
+
         # 优先检查：本地是否已有该版本的 DLL 文件（且完整）
         remote_version_dir = self.get_version_dir(remote_version)
-        if remote_version_dir.exists():
+        if remote_version_dir.exists() and not self.is_legacy_kernel(remote_version_dir):
             if self._has_required_dlls(remote_version_dir, check_integrity=True):
                 # 本地已有该版本且文件完整，直接设置为当前版本
                 logger.info(f"Local already has complete version {remote_version}, skip download")
+                self._write_kernel_marker(remote_version_dir, remote_version)
                 self.set_current_version(remote_version)
                 return False, f"本地已有最新版本 {remote_version}", remote_info
             else:
                 # 本地有该版本目录但文件不完整，删除并重新下载
                 logger.warning(f"Local version {remote_version} exists but files are incomplete, will re-download")
                 try:
-                    import shutil
                     shutil.rmtree(remote_version_dir)
                     logger.info(f"Removed incomplete version directory: {remote_version_dir}")
                 except Exception as e:
@@ -357,8 +506,17 @@ class DLLManager(QObject):
             # 已存在，检查是否完整
             if self._has_required_dlls(version_dir):
                 logger.info(f"Version {version} already installed")
+                self._write_kernel_marker(version_dir, version)
                 self.set_current_version(version)
                 return True, f"版本 {version} 已安装"
+
+        # 与内置内核同版本时直接复制，避免依赖 GitHub 网络。
+        if version == OPENSTEAMTOOL_KERNEL_VERSION:
+            success, message = self.install_bundled_kernel(version)
+            if success:
+                self.download_finished.emit(True, message)
+                return True, message
+            logger.warning("Bundled kernel install failed: %s", message)
 
         version_dir.mkdir(parents=True, exist_ok=True)
 
@@ -371,8 +529,14 @@ class DLLManager(QObject):
                 self.download_finished.emit(False, f"未找到版本 {version} 的下载链接")
                 return False, f"未找到版本 {version} 的下载链接"
         else:
-            # 使用第一个 ZIP asset
-            download_url = assets[0].get("browser_download_url", "")
+            # 选择最合适的内核 ZIP：Release > 普通 zip > Debug
+            from core.github_releases import select_dll_asset
+
+            asset = select_dll_asset(assets)
+            if not asset:
+                self.download_finished.emit(False, "Release 中没有可用的 DLL ZIP")
+                return False, "Release 中没有可用的 DLL ZIP"
+            download_url = asset.get("browser_download_url", "")
             if not download_url:
                 self.download_finished.emit(False, "下载链接为空")
                 return False, "下载链接为空"
@@ -412,6 +576,9 @@ class DLLManager(QObject):
         except Exception as e:
             logger.warning(f"Failed to write version.txt: {e}")
 
+        # 记录内核来源，避免下次被误判为旧版
+        self._write_kernel_marker(version_dir, version)
+
         # 设置当前版本
         self.set_current_version(version)
 
@@ -438,11 +605,14 @@ class DLLManager(QObject):
 
     @staticmethod
     def _parse_version(version_str: str) -> tuple:
-        """解析版本号为元组（用于比较）"""
+        """解析版本号为元组（用于比较，支持 3/4 段版本号）"""
         match = re.match(VERSION_PATTERN, version_str)
         if match:
-            return tuple(int(x) for x in match.groups())
-        return (0, 0, 0)
+            parts = [int(x) if x is not None else 0 for x in match.groups()]
+            while len(parts) < 4:
+                parts.append(0)
+            return tuple(parts)
+        return (0, 0, 0, 0)
 
     @staticmethod
     def _compare_versions(v1: str, v2: str) -> int:

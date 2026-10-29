@@ -75,8 +75,8 @@ class TestGitHubReleases:
         # 第二次调用 (爬取页面) 成功
         mock_response.text = '''
         <html>
-            <a href="/OpenSteam001/OpenSteamTool/releases/tag/v1.2.3">Latest</a>
-            <a href="/OpenSteam001/OpenSteamTool/releases/tag/v1.2.2">Previous</a>
+            <a href="/hazjy/ZSteamTool/releases/tag/v1.2.3">Latest</a>
+            <a href="/hazjy/ZSteamTool/releases/tag/v1.2.2">Previous</a>
         </html>
         '''
 
@@ -211,9 +211,9 @@ class TestGitHubReleases:
         """测试 1.11: 正确爬取 releases 页面获取最新版本"""
         mock_response.text = '''
         <div class="release-entry">
-            <a href="/OpenSteam001/OpenSteamTool/releases/tag/v1.2.3">v1.2.3</a>
-            <a href="/OpenSteam001/OpenSteamTool/releases/tag/v1.2.2">v1.2.2</a>
-            <a href="/OpenSteam001/OpenSteamTool/releases/tag/v1.1.0">v1.1.0</a>
+            <a href="/hazjy/ZSteamTool/releases/tag/v1.2.3">v1.2.3</a>
+            <a href="/hazjy/ZSteamTool/releases/tag/v1.2.2">v1.2.2</a>
+            <a href="/hazjy/ZSteamTool/releases/tag/v1.1.0">v1.1.0</a>
         </div>
         '''
 

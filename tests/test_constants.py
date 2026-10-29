@@ -24,8 +24,11 @@ class TestSteamUrls(unittest.TestCase):
     def test_pattern_urls(self):
         self.assertIn("{component}", config.STEAM_MONITOR_PATTERN_RAW)
         self.assertIn("{sha256}", config.STEAM_MONITOR_PATTERN_CDN)
-        self.assertIn("/ipc/", config.STEAM_MONITOR_IPC_RAW)
-        self.assertIn("@ipc/", config.STEAM_MONITOR_IPC_CDN)
+        self.assertTrue(config.STEAM_PATTERN_URL_TEMPLATES)
+        for template in config.STEAM_PATTERN_URL_TEMPLATES:
+            self.assertIn("{channel}", template)
+            self.assertIn("{component}", template)
+            self.assertIn("{sha256}", template)
 
     def test_sudama_api_url(self):
         self.assertIn("sudama.app", config.SUDAMA_API_DEPOT_KEYS)
