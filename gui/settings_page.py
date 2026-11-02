@@ -20,14 +20,14 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QDialog, QTableWidget, QTableWidgetItem, QAbstractItemView,
-    QPlainTextEdit,
+    QPlainTextEdit, QStackedWidget,
 )
 
 from qfluentwidgets import (
     ScrollArea, SubtitleLabel, CaptionLabel, BodyLabel, StrongBodyLabel,
     PrimaryPushButton, PushButton, LineEdit, SwitchButton, ComboBox,
     CardWidget, GroupHeaderCardWidget, InfoBar, InfoBarPosition,
-    FluentIcon,
+    FluentIcon, Action, SegmentedWidget,
 )
 
 from config import (
@@ -48,11 +48,24 @@ class SettingsPage(ScrollArea):
 
     scan_requested = pyqtSignal()  # 请求重新全盘扫描信号
 
-    def __init__(self, config_manager: ConfigManager, bridge=None, game_manager=None, parent=None):
+    def __init__(
+        self,
+        config_manager: ConfigManager,
+        bridge=None,
+        game_manager=None,
+        diagnostics_page=None,
+        app_lookup_page=None,
+        parent=None,
+    ):
         super().__init__(parent)
         self._config = config_manager
         self._bridge = bridge
         self._game_manager = game_manager
+        self.diagnostics_page = diagnostics_page
+        self.app_lookup_page = app_lookup_page
+        self._diag_pages: dict[str, QWidget] = {}
+        self._diag_actions: dict[str, Action] = {}
+        self._diag_card_expanded = True
         self._workers: list[AsyncWorker] = []
 
         self.setObjectName("settingsPage")
@@ -92,6 +105,10 @@ class SettingsPage(ScrollArea):
 
         # 6. 本地全盘扫描与第三方工具兼容卡片
         self._build_scan_card()
+
+        # 7. 诊断中心与 AppID 探针检测折叠收纳
+        if self.diagnostics_page and self.app_lookup_page:
+            self._build_diagnostics_card()
 
         self._main_layout.addStretch(1)
 
@@ -590,8 +607,9 @@ class SettingsPage(ScrollArea):
 
     # ── 4. Manifest 解析服务探测与回退 ────────────────────────────
 
-    _MANIFEST_PROVIDERS = ("wudrm", "steamrun", "opensteamtool")
+    _MANIFEST_PROVIDERS = ("manifestdex", "wudrm", "steamrun", "opensteamtool")
     _MANIFEST_PROBE_URLS = {
+        "manifestdex": "https://manifest.manifestdex.com/3938499722445376447",
         "wudrm": "http://gmrc.wudrm.com/manifest/3938499722445376447",
         "steamrun": "https://manifest.steam.run/api/manifest/3938499722445376447",
         "opensteamtool": "https://manifest.opensteamtool.com/3938499722445376447",
@@ -612,9 +630,9 @@ class SettingsPage(ScrollArea):
         card_layout.addLayout(header_layout)
 
         desc = CaptionLabel(
-            "内核通过 [manifest] url 选择清单请求码服务。wudrm 国内可用；steamrun 作为回退；"
-            "opensteamtool 官方接口可能被 Cloudflare 拦截。config/lua/manifest.lua 中的 "
-            "fetch_manifest_code() 会优先尝试 wudrm，再回退 steamrun。",
+            "内核通过 [manifest] url 选择清单请求码服务。manifestdex 提供 2026 最新清单内容码；"
+            "wudrm 国内可用；steamrun 作为备用回退；opensteamtool 官方接口可能被 Cloudflare 拦截。"
+            "config/lua/manifest.lua 中的 fetch_manifest_code() 会优先尝试 manifestdex，再回退 wudrm 与 steamrun。",
             card,
         )
         desc.setWordWrap(True)
@@ -658,7 +676,7 @@ class SettingsPage(ScrollArea):
         if not self._bridge:
             InfoBar.warning("不可用", "未检测到 Steam", parent=self, position=InfoBarPosition.TOP)
             return
-        self.manifest_status_lbl.setText("正在探测 wudrm / steamrun / opensteamtool …")
+        self.manifest_status_lbl.setText("正在探测 manifestdex / wudrm / steamrun / opensteamtool …")
         self.manifest_status_lbl.setStyleSheet("color: #108ee9;")
 
         def _probe():
@@ -666,10 +684,11 @@ class SettingsPage(ScrollArea):
             results: list[tuple[str, bool, str]] = []
             for name in self._MANIFEST_PROVIDERS:
                 url = self._MANIFEST_PROBE_URLS[name]
+                headers = {"User-Agent": "ManifestDeX/1.0"} if name == "manifestdex" else None
                 t0 = time.time()
                 try:
                     with httpx.Client(proxy=proxy, timeout=8.0, verify=SSL_VERIFY, follow_redirects=True) as client:
-                        resp = client.get(url)
+                        resp = client.get(url, headers=headers)
                     ms = int((time.time() - t0) * 1000)
                     usable = resp.status_code in (200, 204, 400, 404)
                     results.append((name, usable, f"{resp.status_code} ({ms}ms)"))
@@ -693,7 +712,7 @@ class SettingsPage(ScrollArea):
                 self.manifest_status_lbl.setStyleSheet("color: #f5222d;")
                 InfoBar.warning(
                     "探测失败",
-                    "三个服务均未返回可用响应，保留当前配置；可稍后重试或检查网络/代理。",
+                    "服务均未返回可用响应，保留当前配置；可稍后重试或检查网络/代理。",
                     parent=self,
                     position=InfoBarPosition.TOP,
                     duration=6000,
@@ -1076,4 +1095,130 @@ class SettingsPage(ScrollArea):
             "缓存策略：" + ("强制刷新（每次启动重新解析）" if force_refresh else "按需刷新（命中缓存即复用）")
         )
         self.remote_status_lbl.setStyleSheet("color: #888888;")
+
+    # ── 7. 系统诊断与 AppID 探针检测折叠收纳 ─────────────────────────
+
+    def attach_diagnostics_pages(self, diagnostics_page: QWidget, app_lookup_page: QWidget):
+        """挂载诊断中心与 AppID 探针检测页面，并在设置页底部形成可折叠收纳卡片。"""
+        self.diagnostics_page = diagnostics_page
+        self.app_lookup_page = app_lookup_page
+        if not hasattr(self, "_diag_card") or self._diag_card is None:
+            self._build_diagnostics_card()
+
+    def _build_diagnostics_card(self):
+        if not self.diagnostics_page or not self.app_lookup_page:
+            return
+        self._diag_pages = {
+            "diagnostics": self.diagnostics_page,
+            "app_lookup": self.app_lookup_page,
+        }
+
+        self._diag_card = CardWidget(self)
+        self._diag_card.setObjectName("diagnosticsCard")
+        card_layout = QVBoxLayout(self._diag_card)
+        card_layout.setContentsMargins(20, 20, 20, 20)
+        card_layout.setSpacing(14)
+
+        header_layout = QHBoxLayout()
+        icon_lbl = QLabel(self)
+        icon_lbl.setPixmap(FluentIcon.DEVELOPER_TOOLS.icon().pixmap(24, 24))
+        header_layout.addWidget(icon_lbl)
+        header_layout.addWidget(StrongBodyLabel("系统诊断与 AppID 探针检测（高级运维）", self._diag_card))
+        header_layout.addStretch(1)
+
+        self._btn_toggle_diag = PushButton(FluentIcon.UP, "收起", self._diag_card)
+        self._btn_toggle_diag.clicked.connect(self._on_toggle_diag_clicked)
+        header_layout.addWidget(self._btn_toggle_diag)
+        card_layout.addLayout(header_layout)
+
+        desc = CaptionLabel(
+            "收纳 Steam 运行时环境快照、实时日志检索、崩溃转储以及本地 AppID 清单探针信息。",
+            self._diag_card,
+        )
+        desc.setStyleSheet("color: #888888;")
+        card_layout.addWidget(desc)
+
+        self._diag_content_container = QWidget(self._diag_card)
+        content_layout = QVBoxLayout(self._diag_content_container)
+        content_layout.setContentsMargins(0, 8, 0, 0)
+        content_layout.setSpacing(10)
+
+        self._diag_segmented = SegmentedWidget(self._diag_content_container)
+        self._diag_segmented.setObjectName("diagnosticsSegmented")
+        self._diag_segmented.addItem("diagnostics", "系统诊断中心", icon=FluentIcon.DEVELOPER_TOOLS)
+        self._diag_segmented.addItem("app_lookup", "AppID 探针检测", icon=FluentIcon.APPLICATION)
+        content_layout.addWidget(self._diag_segmented)
+
+        self._diag_stack = QStackedWidget(self._diag_content_container)
+        self._diag_stack.setObjectName("diagnosticsStack")
+        self._diag_stack.setMinimumHeight(650)
+        self._diag_stack.addWidget(self.diagnostics_page)
+        self._diag_stack.addWidget(self.app_lookup_page)
+        content_layout.addWidget(self._diag_stack)
+
+        self._diag_segmented.currentItemChanged.connect(self._on_diag_tab_changed)
+
+        card_layout.addWidget(self._diag_content_container)
+
+        self._diag_card_expanded = True
+        self._main_layout.addWidget(self._diag_card)
+
+        # 注册 actions 便于导航引用
+        act_diag = Action(FluentIcon.DEVELOPER_TOOLS, "系统诊断中心", self)
+        act_diag.triggered.connect(lambda _c=False: self.show_sub_page(self.diagnostics_page))
+        self._diag_actions["diagnostics"] = act_diag
+
+        act_lookup = Action(FluentIcon.APPLICATION, "AppID 探针检测", self)
+        act_lookup.triggered.connect(lambda _c=False: self.show_sub_page(self.app_lookup_page))
+        self._diag_actions["app_lookup"] = act_lookup
+
+    def _on_diag_tab_changed(self, key: str):
+        page = self._diag_pages.get(key)
+        if page is not None and hasattr(self, "_diag_stack"):
+            self._diag_stack.setCurrentWidget(page)
+
+    def _on_toggle_diag_clicked(self):
+        self._toggle_diag_card(expand=not self._diag_card_expanded)
+
+    def _toggle_diag_card(self, expand: bool):
+        self._diag_card_expanded = expand
+        if expand:
+            self._diag_content_container.show()
+            self._btn_toggle_diag.setText("收起")
+            self._btn_toggle_diag.setIcon(FluentIcon.UP)
+        else:
+            self._diag_content_container.hide()
+            self._btn_toggle_diag.setText("展开")
+            self._btn_toggle_diag.setIcon(FluentIcon.CHEVRON_DOWN_MED)
+
+    def has_sub_page(self, page: QWidget) -> bool:
+        return hasattr(self, "_diag_pages") and page in self._diag_pages.values()
+
+    def show_sub_page(self, page: QWidget) -> None:
+        if not self.has_sub_page(page):
+            return
+        if not getattr(self, "_diag_card_expanded", False):
+            self._toggle_diag_card(expand=True)
+        for key, p in self._diag_pages.items():
+            if p is page:
+                if hasattr(self, "_diag_segmented") and self._diag_segmented.currentRouteKey() != key:
+                    self._diag_segmented.setCurrentItem(key)
+                if hasattr(self, "_diag_stack"):
+                    self._diag_stack.setCurrentWidget(p)
+                break
+        if hasattr(self, "_diag_card"):
+            self.ensureWidgetVisible(self._diag_card)
+
+    def active_sub_page(self) -> QWidget | None:
+        if getattr(self, "_diag_card_expanded", False) and hasattr(self, "_diag_stack"):
+            return self._diag_stack.currentWidget()
+        return None
+
+    def get_nav_item(self, key: str):
+        if key in self._diag_actions:
+            return self._diag_actions[key]
+        if hasattr(self, "_diag_segmented") and hasattr(self._diag_segmented, "items"):
+            return self._diag_segmented.items.get(key)
+        return None
+
 

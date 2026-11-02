@@ -523,11 +523,31 @@ class ManifestCompletionService:
         # ── 4. 收尾统计（逐 depot 给结论与原因）────────────────
         self._finalize(targets, required, app_id, report, cache, write_lua, write_sources)
 
-        # ── 5. 用归档密钥补全 Lua（depot 加密密钥缺失会导致 Steam 无法下载）──
-        if apply_keys and report.depot_keys and report.lua_path and os.path.isfile(report.lua_path):
-            for depot_id, key in report.depot_keys.items():
-                if depot_id in targets or depot_id in required:
-                    update_lua_depot_key(report.lua_path, depot_id, key)
+        # ── 5. 用归档密钥与社区密钥库补全 Lua（depot 加密密钥缺失会导致 Steam 无法下载）──
+        if apply_keys and report.lua_path and os.path.isfile(report.lua_path):
+            if report.depot_keys:
+                for depot_id, key in report.depot_keys.items():
+                    if depot_id in targets or depot_id in required:
+                        update_lua_depot_key(report.lua_path, depot_id, key)
+            try:
+                bindings = parse_lua_bindings(report.lua_path)
+                depots_without_keys = [
+                    did for did, b in bindings.items()
+                    if not b.get("depot_key") and did != str(app_id) and did not in report.depot_keys
+                ]
+                if depots_without_keys:
+                    from core.metadata_fetcher import MetadataFetcher
+                    mf = MetadataFetcher()
+                    all_keys = mf._get_sudama_all_keys()
+                    for did in depots_without_keys:
+                        if did not in report.depot_keys:
+                            key = all_keys.get(did)
+                            if key:
+                                if update_lua_depot_key(report.lua_path, did, key):
+                                    logger.info("Lua %s: 补齐社区 depot 密钥 %s", os.path.basename(report.lua_path), did)
+                                    report.depot_keys[did] = key
+            except Exception as exc:
+                logger.warning("从社区密钥库补全 depot 密钥异常: %s", exc)
 
         logger.info("AppID %s 补全结果：%s", app_id, report.summary())
         return report

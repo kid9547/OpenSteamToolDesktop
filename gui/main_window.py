@@ -73,13 +73,14 @@ class MainWindow(MSFluentWindow):
         from gui.diagnostics_page import DiagnosticsPage
         from gui.denuvo_page import DenuvoAuthPage, DenuvoExtractPage
         from gui.settings_page import SettingsPage
+        from gui.hub_page import HubPage
         from config import ENABLE_ACCELERATOR_PAGE
 
         # 确保 game_manager 拥有准确的 steam_path
         if self._bridge and self._bridge.get_steam_path():
             self._game_manager.set_steam_path(self._bridge.get_steam_path())
 
-        # 创建页面
+        # 创建基础功能页面
         self.home_page = HomePage(
             bridge,
             game_manager,
@@ -87,11 +88,9 @@ class MainWindow(MSFluentWindow):
             parent=self,
         )
 
-        self.inject_page = InjectPage(bridge, config_manager, parent=self)
-
-        self.search_page = SearchPage(game_manager, bridge=bridge, parent=self)
-
         self.library_page = LibraryPage(game_manager, bridge=bridge, parent=self)
+        self.library_page.advanced_page_requested.connect(self._switch_page)
+        self.search_page = SearchPage(game_manager, bridge=bridge, parent=self)
 
         self.manifest_page = ManifestPage(game_manager, bridge=bridge, parent=self)
         # 清单变动后刷新游戏库的清单就绪状态
@@ -105,6 +104,7 @@ class MainWindow(MSFluentWindow):
         )
 
         self.components_page = ComponentsPage(bridge, parent=self)
+        self.inject_page = InjectPage(bridge, config_manager, parent=self)
 
         self.app_lookup_page = AppLookupPage(bridge, parent=self)
         self.diagnostics_page = DiagnosticsPage(bridge, parent=self)
@@ -119,12 +119,54 @@ class MainWindow(MSFluentWindow):
             config_manager,
             bridge=bridge,
             game_manager=game_manager,
+            diagnostics_page=self.diagnostics_page,
+            app_lookup_page=self.app_lookup_page,
             parent=self,
         )
         self.settings_page.scan_requested.connect(self.library_page._load_games_async)
         self.cloud_save_page.settings_requested.connect(
             lambda: self.switchTo(self.settings_page)
         )
+
+        # 组装 方案一：3+1 黄金架构
+        # 1. 游戏中心（Game Center）：顶部分段 [我的游戏库] / [搜索入库]，右上角「高级与维护」下拉菜单
+        self.game_center_page = HubPage("gameCenterPage", advanced_title="高级与维护", parent=self)
+        self._library_nav_btn = self.game_center_page.add_page(
+            self.library_page, "我的游戏库", "library", icon=FluentIcon.LIBRARY
+        )
+        self._search_nav_btn = self.game_center_page.add_page(
+            self.search_page, "搜索入库", "search", icon=FluentIcon.SEARCH
+        )
+        self._manifest_nav_btn = self.game_center_page.add_advanced_page(
+            self.manifest_page, "散装清单与缓存维护", "manifest", icon=FluentIcon.ZIP_FOLDER
+        )
+        self._lua_nav_btn = self.game_center_page.add_advanced_page(
+            self.lua_page, "Lua规则与冲突审计", "lua", icon=FluentIcon.CODE
+        )
+        self._cloud_nav_btn = self.game_center_page.add_advanced_page(
+            self.cloud_save_page, "云存档备份中心", "cloud_save", icon=FluentIcon.CLOUD
+        )
+        self._denuvo_extract_nav_btn = self.game_center_page.add_advanced_page(
+            self.denuvo_extract_page, "D加密提取", "denuvo_extract", icon=FluentIcon.CERTIFICATE
+        )
+        self._denuvo_auth_nav_btn = self.game_center_page.add_advanced_page(
+            self.denuvo_auth_page, "D加密授权向导", "denuvo_auth", icon=FluentIcon.ACCEPT
+        )
+        self.game_center_page.set_default_page("library")
+
+        # 2. 内核管理（Kernel）：合并 注入部署 与 组件状态
+        self.kernel_page = HubPage("kernelPage", parent=self)
+        self._inject_nav_btn = self.kernel_page.add_page(
+            self.inject_page, "注入部署", "inject", icon=FluentIcon.DOWNLOAD
+        )
+        self._components_nav_btn = self.kernel_page.add_page(
+            self.components_page, "组件状态", "components", icon=FluentIcon.IOT
+        )
+        self.kernel_page.set_default_page("inject")
+
+        # 3. 设置页已在底部折叠收纳诊断中心与 AppID 探针检测
+        self._diagnostics_nav_btn = self.settings_page.get_nav_item("diagnostics")
+        self._app_lookup_nav_btn = self.settings_page.get_nav_item("app_lookup")
 
         if ENABLE_ACCELERATOR_PAGE:
             from gui.accelerate_page import AcceleratePage
@@ -138,31 +180,16 @@ class MainWindow(MSFluentWindow):
 
         # ---- 全局状态订阅（一处改动，全局跟进） ----
         app_state.injection_changed.connect(self.home_page.refresh_status)
-
-        # 保留旧信号兼容（InjectPage 内部同步用）
         self.inject_page.inject_status_changed.connect(self.home_page.refresh_status)
 
-        # ---- 导航 ----
-
-        # 页面导航
+        # ---- 一级侧边栏构建（3项黄金架构 + 底部设置与重启） ----
         self._home_nav_btn = self.addSubInterface(self.home_page, FluentIcon.HOME, "首页")
-        self._inject_nav_btn = self.addSubInterface(self.inject_page, FluentIcon.DOWNLOAD, "注入管理")
-        self._components_nav_btn = self.addSubInterface(
-            self.components_page, FluentIcon.IOT, "组件状态"
+        self._game_center_nav_btn = self.addSubInterface(
+            self.game_center_page, FluentIcon.LIBRARY, "游戏中心"
         )
-        self._app_lookup_nav_btn = self.addSubInterface(
-            self.app_lookup_page, FluentIcon.APPLICATION, "AppID 查询"
+        self._kernel_nav_btn = self.addSubInterface(
+            self.kernel_page, FluentIcon.IOT, "内核管理"
         )
-        self._diagnostics_nav_btn = self.addSubInterface(
-            self.diagnostics_page, FluentIcon.DEVELOPER_TOOLS, "诊断中心"
-        )
-        self._search_nav_btn = self.addSubInterface(self.search_page, FluentIcon.SEARCH, "搜索入库")
-        self._library_nav_btn = self.addSubInterface(self.library_page, FluentIcon.LIBRARY, "游戏库")
-        self._manifest_nav_btn = self.addSubInterface(self.manifest_page, FluentIcon.ZIP_FOLDER, "清单管理")
-        self._lua_nav_btn = self.addSubInterface(self.lua_page, FluentIcon.CODE, "Lua 规则")
-        self._cloud_nav_btn = self.addSubInterface(self.cloud_save_page, FluentIcon.CLOUD, "云存档")
-        self._denuvo_extract_nav_btn = self.addSubInterface(self.denuvo_extract_page, FluentIcon.CERTIFICATE, "D加密提取")
-        self._denuvo_auth_nav_btn = self.addSubInterface(self.denuvo_auth_page, FluentIcon.ACCEPT, "D加密授权")
         if self.accelerate_page:
             self._accelerate_nav_btn = self.addSubInterface(self.accelerate_page, FluentIcon.SPEED_HIGH, "科学加速")
         else:
@@ -187,6 +214,10 @@ class MainWindow(MSFluentWindow):
 
         # 透明背景
         self.setStyleSheet("MSFluentWindow { background: transparent; }")
+
+        # 安装路由兼容委托（确保 switchTo 及 stackedWidget.currentWidget 透明支持所有历史子页面）
+        self._current_logical_page = None
+        self._patch_navigation_delegation()
 
         # 启用全窗口拖拽导入清单与 Lua
         self.setAcceptDrops(True)
@@ -462,7 +493,46 @@ class MainWindow(MSFluentWindow):
 
     # 切换到默认页面
 
-    # ---- 页面路由 ----
+    # ---- 页面路由与委托兼容 ----
+
+    def _patch_navigation_delegation(self):
+        orig_set_current_widget = self.stackedWidget.setCurrentWidget
+        orig_current_widget = self.stackedWidget.currentWidget
+
+        def custom_set_current_widget(interface, popOut=False):
+            self._current_logical_page = interface
+            # 1. 顶层一级页面
+            if self.stackedWidget.indexOf(interface) != -1:
+                return orig_set_current_widget(interface, popOut=popOut)
+            # 2. 检查子容器
+            for i in range(self.stackedWidget.count()):
+                container = self.stackedWidget.widget(i)
+                if hasattr(container, "has_sub_page") and container.has_sub_page(interface):
+                    container.show_sub_page(interface)
+                    route_key = container.objectName()
+                    if hasattr(self.navigationInterface, "setCurrentItem"):
+                        self.navigationInterface.setCurrentItem(route_key)
+                    return orig_set_current_widget(container, popOut=popOut)
+            return orig_set_current_widget(interface, popOut=popOut)
+
+        def custom_current_widget():
+            top = orig_current_widget()
+            if top is None:
+                return None
+            if self._current_logical_page is top:
+                return top
+            if hasattr(top, "active_sub_page"):
+                sub = top.active_sub_page()
+                if sub is not None:
+                    return sub
+            return top
+
+        self.stackedWidget.setCurrentWidget = custom_set_current_widget
+        self.stackedWidget.currentWidget = custom_current_widget
+
+    def switchTo(self, interface: QWidget):
+        """兼容层：切换页面，透明支持顶层导航与容器子页面。"""
+        self.stackedWidget.setCurrentWidget(interface, popOut=False)
 
     def _switch_to_default_page(self):
         try:
@@ -477,11 +547,13 @@ class MainWindow(MSFluentWindow):
             "manifest": self.manifest_page,
             "lua": self.lua_page,
             "cloud": self.cloud_save_page,
+            "cloud_save": self.cloud_save_page,
             "components": self.components_page,
             "app_lookup": self.app_lookup_page,
             "diagnostics": self.diagnostics_page,
             "denuvo_extract": self.denuvo_extract_page,
             "denuvo_auth": self.denuvo_auth_page,
+            "settings": self.settings_page,
         }
         self.switchTo(page_map.get(default, self.home_page))
 
@@ -498,11 +570,13 @@ class MainWindow(MSFluentWindow):
             "manifest": self.manifest_page,
             "lua": self.lua_page,
             "cloud": self.cloud_save_page,
+            "cloud_save": self.cloud_save_page,
             "components": self.components_page,
             "app_lookup": self.app_lookup_page,
             "diagnostics": self.diagnostics_page,
             "denuvo_extract": self.denuvo_extract_page,
             "denuvo_auth": self.denuvo_auth_page,
+            "settings": self.settings_page,
         }
         target = page_map.get(page_key)
         if target:
@@ -590,7 +664,8 @@ class MainWindow(MSFluentWindow):
 
     def notify_theme_changed(self):
         pages = [
-            self.home_page, self.inject_page, self.search_page, self.library_page,
+            self.home_page, self.game_center_page, self.kernel_page, self.settings_page,
+            self.inject_page, self.search_page, self.library_page,
             self.manifest_page, self.lua_page, self.cloud_save_page,
             self.components_page, self.app_lookup_page, self.diagnostics_page,
             self.denuvo_extract_page, self.denuvo_auth_page,
@@ -623,7 +698,8 @@ class MainWindow(MSFluentWindow):
     def shutdown(self):
         """清理所有页面的后台线程和资源"""
         pages = [
-            self.home_page, self.inject_page, self.search_page, self.library_page,
+            self.home_page, self.game_center_page, self.kernel_page, self.settings_page,
+            self.inject_page, self.search_page, self.library_page,
             self.manifest_page, self.lua_page, self.cloud_save_page,
             self.components_page, self.app_lookup_page, self.diagnostics_page,
             self.denuvo_extract_page, self.denuvo_auth_page,

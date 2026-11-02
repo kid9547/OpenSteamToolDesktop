@@ -410,6 +410,7 @@ class MetadataFetcher:
 
         # 3. 按 depot_id 逐个查找 depot 专属密钥
         depot_keys_found = 0
+        missing_depots = []
         for depot in metadata.depots:
             if depot.depot_key:
                 # 已有密钥（来自 SteamCMD/Store API），跳过
@@ -420,6 +421,22 @@ class MetadataFetcher:
                 self._depotkeys_cache[str(depot.depot_id)] = depot_key
                 depot_keys_found += 1
                 logger.debug(f"  Depot {depot.depot_id}: key found in Sudama")
+            else:
+                missing_depots.append(depot)
+
+        # 若仍有 depot 缺失密钥，强制从远程刷新一次最新密钥库再次查找
+        if missing_depots:
+            logger.info("部分 depot (%s) 缺失解密密钥，尝试强制刷新社区密钥库...", [d.depot_id for d in missing_depots])
+            fresh_keys = self._get_sudama_all_keys(force_refresh=True)
+            if fresh_keys:
+                sudama_keys = fresh_keys
+                for depot in missing_depots:
+                    depot_key = self._extract_key_from_sudama(sudama_keys, depot.depot_id)
+                    if depot_key:
+                        depot.depot_key = depot_key
+                        self._depotkeys_cache[str(depot.depot_id)] = depot_key
+                        depot_keys_found += 1
+                        logger.info(f"  Depot {depot.depot_id}: key found after refreshing community keys")
 
         if depot_keys_found > 0:
             logger.info(f"  Found {depot_keys_found} depot-specific key(s) from Sudama")
@@ -458,24 +475,25 @@ class MetadataFetcher:
             logger.info(f"  Found {dlc_depot_keys_found} DLC depot key(s) from Sudama")
             self._save_depotkeys_cache()
 
-    def _get_sudama_all_keys(self) -> dict[str, str]:
-        """获取 Sudama 全量密钥库（内存缓存 24h）
+    def _get_sudama_all_keys(self, force_refresh: bool = False) -> dict[str, str]:
+        """获取 Sudama 全量密钥库（内存缓存 24h，本地缓存 24h）
 
         Returns:
             {id: key_string} — 包含 app_id 和 depot_id 的密钥
         """
         now = time.time()
         # 内存缓存 24 小时有效
-        if self._sudama_all_keys and (now - self._sudama_fetch_time) < 86400:
+        if not force_refresh and self._sudama_all_keys and (now - self._sudama_fetch_time) < 86400:
             return self._sudama_all_keys
 
-        # 尝试从本地缓存加载
-        cached = self._load_sudama_cache_file()
-        if cached:
-            self._sudama_all_keys = cached
-            self._sudama_fetch_time = now
-            logger.debug(f"  Sudama keys loaded from local cache ({len(cached)} entries)")
-            return cached
+        # 尝试从本地缓存加载（本地缓存 24h 内有效）
+        if not force_refresh:
+            cached = self._load_sudama_cache_file(max_age=86400.0)
+            if cached:
+                self._sudama_all_keys = cached
+                self._sudama_fetch_time = now
+                logger.debug(f"  Sudama keys loaded from local cache ({len(cached)} entries)")
+                return cached
 
         # 从远程 API 获取
         try:
@@ -517,13 +535,18 @@ class MetadataFetcher:
                 return self._sudama_all_keys
             return {}
 
-    def _load_sudama_cache_file(self) -> dict[str, str]:
-        """从本地 sudama_cache.json 加载全量密钥缓存"""
+    def _load_sudama_cache_file(self, max_age: float = 86400.0) -> dict[str, str]:
+        """从本地 sudama_cache.json 加载全量密钥缓存，若过期则返回空字典以触发远程刷新"""
         cache_path = self._cache_dir / "sudama_cache.json"
         if not cache_path.exists():
             return {}
         try:
             raw = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and "timestamp" in raw:
+                ts = raw.get("timestamp", 0)
+                if (time.time() - ts) > max_age:
+                    logger.info("Sudama 本地缓存已过期 (超过 %s 秒)，将从远程获取最新密钥", max_age)
+                    return {}
             # 格式1: {timestamp, data: {id: key}}
             if isinstance(raw, dict) and "data" in raw:
                 data = raw["data"]

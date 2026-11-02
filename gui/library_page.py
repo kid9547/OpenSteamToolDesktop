@@ -67,6 +67,8 @@ class LibraryPage(ScrollArea):
 
     # 信号：游戏库发生变化（出库），通知搜索页刷新推荐
     library_changed = pyqtSignal()
+    # 信号：请求跳转高级运维子页面（散装清单、Lua审计、云存档等）
+    advanced_page_requested = pyqtSignal(str)
 
     def __init__(
         self,
@@ -144,6 +146,28 @@ class LibraryPage(ScrollArea):
         import_menu.addAction(action_open_lua)
         self.import_btn.setMenu(import_menu)
         header.addWidget(self.import_btn)
+
+        # 高级与维护 下拉按钮（方案一架构：收纳散装清单、Lua审计、云存档等高级运维）
+        self.advanced_btn = DropDownPushButton(FluentIcon.DEVELOPER_TOOLS, "高级与维护", self)
+        self.advanced_menu = RoundMenu(parent=self.advanced_btn)
+        action_manifest = Action(FluentIcon.ZIP_FOLDER, "散装清单与缓存维护", self)
+        action_manifest.triggered.connect(lambda: self.advanced_page_requested.emit("manifest"))
+        action_lua = Action(FluentIcon.CODE, "Lua规则与冲突审计", self)
+        action_lua.triggered.connect(lambda: self.advanced_page_requested.emit("lua"))
+        action_cloud = Action(FluentIcon.CLOUD, "云存档备份中心", self)
+        action_cloud.triggered.connect(lambda: self.advanced_page_requested.emit("cloud_save"))
+        self.advanced_menu.addAction(action_manifest)
+        self.advanced_menu.addAction(action_lua)
+        self.advanced_menu.addAction(action_cloud)
+        self.advanced_menu.addSeparator()
+        action_denuvo_auth = Action(FluentIcon.ACCEPT, "D加密授权向导", self)
+        action_denuvo_auth.triggered.connect(lambda: self.advanced_page_requested.emit("denuvo_auth"))
+        action_denuvo_extract = Action(FluentIcon.CERTIFICATE, "D加密票据提取", self)
+        action_denuvo_extract.triggered.connect(lambda: self.advanced_page_requested.emit("denuvo_extract"))
+        self.advanced_menu.addAction(action_denuvo_auth)
+        self.advanced_menu.addAction(action_denuvo_extract)
+        self.advanced_btn.setMenu(self.advanced_menu)
+        header.addWidget(self.advanced_btn)
 
         self.deep_scan_btn = TransparentToolButton(FluentIcon.SEARCH, self)
         self.deep_scan_btn.setFixedSize(32, 32)

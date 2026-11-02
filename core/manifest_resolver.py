@@ -139,6 +139,27 @@ class ManifestResolver:
                 return True
         return False
 
+
+    def _enrich_lua_depot_keys(self, lua_path: str, app_id: str):
+        """检查并补齐 Lua 中缺失的 depot 解密密钥（避免 Steam 下载报 Missing decryption key）"""
+        try:
+            bindings = parse_lua_bindings(lua_path)
+            depots_without_keys = [
+                did for did, b in bindings.items()
+                if not b.get("depot_key") and did != str(app_id)
+            ]
+            if depots_without_keys:
+                from core.metadata_fetcher import MetadataFetcher
+                mf = MetadataFetcher()
+                all_keys = mf._get_sudama_all_keys()
+                for did in depots_without_keys:
+                    key = all_keys.get(did)
+                    if key:
+                        update_lua_depot_key(lua_path, did, key)
+                        logger.info("ManifestResolver: 补齐 Lua %s 的 depot %s 解密密钥", os.path.basename(lua_path), did)
+        except Exception as exc:
+            logger.warning("ManifestResolver 补齐 depot 密钥异常: %s", exc)
+
     def diagnose_lua_file(self, lua_path: str) -> ManifestReadiness:
         """根据 Lua 配置文件内容诊断该游戏所需的清单就绪情况"""
         app_id = os.path.splitext(os.path.basename(lua_path))[0]
@@ -331,6 +352,8 @@ class ManifestResolver:
         baseline_missing_depots = {d[0] for d in _missing_now()}
 
         if not baseline_missing_depots and target_depots:
+            if os.path.isfile(lua_path):
+                self._enrich_lua_depot_keys(lua_path, app_id)
             return True, "游戏清单文件已全部就绪", 0
 
         # 步骤 3: 使用多源下载器下载缺失的（已知 GID 的）清单

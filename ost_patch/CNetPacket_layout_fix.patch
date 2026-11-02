@@ -1,0 +1,137 @@
+﻿diff --git a/src/Hook/Hooks_NetPacket.cpp b/src/Hook/Hooks_NetPacket.cpp
+index 5fe24be..ea431e5 100644
+--- a/src/Hook/Hooks_NetPacket.cpp
++++ b/src/Hook/Hooks_NetPacket.cpp
+@@ -6,6 +6,7 @@
+ #include "Utils/Tickets/AppTicket.h"
+ #include "Utils/Support/FnvHash.h"
+ #include "Utils/CloudRedirect/CloudRedirectHost.h"
++#include "OSTPlatform/include/Memory.h"
+ #include <chrono>
+ #include <cstring>
+ #include <deque>
+@@ -81,6 +82,32 @@ namespace {
+         return true;
+     }
+ 
++    // ── CNetPacket layout ──────────────────────────────────────
++    // Older Steam builds: m_pubData is at +0x08 (right after m_hConnection).
++    // Newer builds (seen in 1791918634): 8 more bytes precede the same fields,
++    // so m_pubData/m_cubData/m_cRef/m_pubNetworkBuffer/m_pNext all sit at +8.
++    // All code below is written against the old struct, so RecvPkt converts the
++    // raw pointer into a "fields" pointer first (PacketFields) and hands the
++    // raw pointer back to Steam (PacketRaw).
++    //
++    // Layout is told apart by the qword at +0x08: in the old layout it is the
++    // data pointer (readable memory); in the new one it is part of the extra
++    // header and never a valid pointer (observed: 0x00000000ffffffff and similar).
++    int g_NetPacketBias = 0;   // bytes between raw CNetPacket* and field view
++
++    inline CNetPacket* PacketFields(CNetPacket* raw)
++    {
++        const auto* qwords = reinterpret_cast<const uintptr_t*>(raw);
++        const bool oldLayout = OSTPlatform::Memory::IsReadable(reinterpret_cast<const void*>(qwords[1]), 1);
++        g_NetPacketBias = oldLayout ? 0 : 8;
++        return reinterpret_cast<CNetPacket*>(reinterpret_cast<uint8*>(raw) + g_NetPacketBias);
++    }
++
++    inline CNetPacket* PacketRaw(CNetPacket* fields)
++    {
++        return reinterpret_cast<CNetPacket*>(reinterpret_cast<uint8*>(fields) - g_NetPacketBias);
++    }
++
+     // ── Incoming: replace header and/or body (ring-buffer pool) ──
+     inline void ReplaceRecvPacket(CNetPacket* p,
+                                   const uint8* pNewHdr, uint32 cbNewHdr,
+@@ -1316,15 +1343,23 @@ namespace {
+         return result;
+     }
+ 
+-    HOOK_FUNC(RecvPkt, void*, void* pThis, CNetPacket* pPacket)
++    HOOK_FUNC(RecvPkt, void*, void* pThis, CNetPacket* pRawPacket)
+     {
++        // pPacket is the field view; Steam must always be given pRawPacket.
++        CNetPacket* pPacket = PacketFields(pRawPacket);
++
++        // Unknown layout / empty packet: hand it to Steam untouched rather
++        // than dereference a pointer we cannot trust.
++        if (!OSTPlatform::Memory::IsReadable(pPacket->m_pubData, sizeof(MsgHdr)))
++            return oRecvPkt(pThis, pRawPacket);
++
+         Hooks_NetPacket_RichPresence::TryInject(
+             pThis, pPacket,
+-            [](void* pT, CNetPacket* pP) -> bool { return oRecvPkt(pT, pP) != nullptr; });
++            [](void* pT, CNetPacket* pP) -> bool { return oRecvPkt(pT, PacketRaw(pP)) != nullptr; });
+ 
+         Hooks_NetPacket_Cloud::Drain(
+             pThis, pPacket,
+-            [](void* pT, CNetPacket* pP) -> bool { return oRecvPkt(pT, pP) != nullptr; });
++            [](void* pT, CNetPacket* pP) -> bool { return oRecvPkt(pT, PacketRaw(pP)) != nullptr; });
+ 
+         EMsg eMsg;
+         const uint8 *pBody, *pHdr;
+@@ -1350,7 +1385,7 @@ namespace {
+             }
+         }
+ 
+-        return oRecvPkt(pThis, pPacket);
++        return oRecvPkt(pThis, pRawPacket);
+     }
+ 
+ } // anonymous namespace
+diff --git a/src/OSTPlatform/Windows/Memory.cpp b/src/OSTPlatform/Windows/Memory.cpp
+index fa82ce3..18d9c98 100644
+--- a/src/OSTPlatform/Windows/Memory.cpp
++++ b/src/OSTPlatform/Windows/Memory.cpp
+@@ -20,6 +20,23 @@ std::optional<ModuleImage> GetModuleImage(DynamicLibrary::ModuleHandle module) {
+     };
+ }
+ 
++bool IsReadable(const void* address, size_t size) {
++    if (!address || size == 0) return false;
++
++    const auto begin = reinterpret_cast<uintptr_t>(address);
++    const auto end   = begin + size;
++    if (end < begin) return false;
++
++    // A range may span several regions; walk them all.
++    for (uintptr_t cur = begin; cur < end; ) {
++        MEMORY_BASIC_INFORMATION mbi{};
++        if (!VirtualQuery(reinterpret_cast<const void*>(cur), &mbi, sizeof(mbi))) return false;
++        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return false;
++        cur = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
++    }
++    return true;
++}
++
+ bool WriteExecutableByte(void* target, uint8_t value) {
+     if (!target) {
+         OSTP_LOG_WARN("WriteExecutableByte: target is null");
+diff --git a/src/OSTPlatform/include/Memory.h b/src/OSTPlatform/include/Memory.h
+index 0213c23..89b35eb 100644
+--- a/src/OSTPlatform/include/Memory.h
++++ b/src/OSTPlatform/include/Memory.h
+@@ -16,4 +16,8 @@ namespace OSTPlatform::Memory {
+     std::optional<ModuleImage> GetModuleImage(DynamicLibrary::ModuleHandle module);
+     bool WriteExecutableByte(void* target, uint8_t value);
+ 
++    // True if [address, address + size) is committed, readable memory. Safe to
++    // call with arbitrary values (nullptr, non-canonical addresses, junk).
++    bool IsReadable(const void* address, size_t size);
++
+ } // namespace OSTPlatform::Memory
+diff --git a/src/Steam/Structs.h b/src/Steam/Structs.h
+index 344ca6e..0cecff8 100644
+--- a/src/Steam/Structs.h
++++ b/src/Steam/Structs.h
+@@ -206,6 +206,10 @@ struct IKeyValuesSystem {
+ };
+ using KeyValuesSystemSteam_t = IKeyValuesSystem* (*)();
+ 
++// Field layout of the older CNetPacket. Newer Steam builds (e.g. 1791918634)
++// insert 8 extra bytes before m_pubData, shifting every field after
++// m_hConnection by +8; Hooks_NetPacket normalises that via
++// PacketFields()/PacketRaw().
+ struct CNetPacket
+ {
+ 	HCONNECTION m_hConnection;

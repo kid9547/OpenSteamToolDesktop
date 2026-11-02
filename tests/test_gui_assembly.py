@@ -184,3 +184,32 @@ def test_manifest_page_wired_to_library_refresh(qapp, workspace, monkeypatch):
     finally:
         window.close()
         window.deleteLater()
+
+
+def test_library_toolbar_advanced_menu_routing(qapp, workspace):
+    """测试方案一：游戏库工具栏高级与维护菜单暴露并正确路由。"""
+    from core.config_manager import ConfigManager
+    from core.game_manager import LuaGameManager
+    from core.steam_bridge import SteamBridge
+    from gui.main_window import MainWindow
+
+    window = MainWindow(
+        SteamBridge(), LuaGameManager(config_manager=ConfigManager()), ConfigManager()
+    )
+    try:
+        assert hasattr(window.library_page, "advanced_btn")
+        assert window.library_page.advanced_btn.text() == "高级与维护"
+
+        # 触发 advanced_page_requested 信号测试路由到散装清单、Lua审计、云存档
+        window.library_page.advanced_page_requested.emit("manifest")
+        assert window.stackedWidget.currentWidget() is window.manifest_page
+
+        window.library_page.advanced_page_requested.emit("lua")
+        assert window.stackedWidget.currentWidget() is window.lua_page
+
+        window.library_page.advanced_page_requested.emit("cloud_save")
+        assert window.stackedWidget.currentWidget() is window.cloud_save_page
+    finally:
+        window.close()
+        window.deleteLater()
+

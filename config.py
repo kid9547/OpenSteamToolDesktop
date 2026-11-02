@@ -12,7 +12,7 @@ from pathlib import Path
 
 # ============ 应用信息 ============
 APP_NAME: str = "OpenSteamToolDesktop"
-APP_VERSION: str = "1.2.3"
+APP_VERSION: str = "1.3.0"
 
 # ============ 功能模块开关 ============
 # 科学加速页面开关（默认关闭；可通过环境变量 ENABLE_ACCELERATOR=1 或构建参数 --with-accelerator 开启）
@@ -114,7 +114,9 @@ GITHUB_ARCHIVE_MIRRORS: list[str] = [
 MANIFEST_ARCHIVE_TIMEOUT: float = 30.0
 
 # Manifest Request Code（内容码）查询接口，{gid} 为清单 GID
+# 说明：2026 年 Steam 更新后，Valve 屏蔽了旧的匿名清单请求码，ManifestDeX（PR #200）提供实时可用码
 MANIFEST_REQUEST_CODE_APIS: list[str] = [
+    "https://manifest.manifestdex.com/{gid}",
     "http://gmrc.wudrm.com/manifest/{gid}",
     "https://manifest.steam.run/api/manifest/{gid}",
 ]

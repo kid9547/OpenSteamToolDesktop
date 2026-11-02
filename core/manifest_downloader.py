@@ -434,7 +434,7 @@ class ManifestDownloader:
                 # 官方 raw 走系统代理客户端，公共加速镜像直连（实测二者皆可用）
                 client = self._http if label == "GitHub Raw" else self._direct_http
                 try:
-                    resp = client.get(url, timeout=12.0)
+                    resp = client.get(url, timeout=6.0)
                 except Exception:
                     continue
                 if resp.status_code != 200 or len(resp.content) < 16:
@@ -449,8 +449,9 @@ class ManifestDownloader:
     def fetch_request_code(self, manifest_gid: str) -> str | None:
         """查询清单内容码（Manifest Request Code）。
 
-        实测可用的社区接口（2026-10）：
-        * ``http://gmrc.wudrm.com/manifest/{gid}`` → 纯文本内容码
+        实测可用的社区接口（2026 年验证）：
+        * ``https://manifest.manifestdex.com/{gid}`` → 现代内容码服务（PR #200）
+        * ``http://gmrc.wudrm.com/manifest/{gid}`` → 纯文本内容码（部分受限）
         * ``https://manifest.steam.run/api/manifest/{gid}`` → ``{"content": "..."}``
 
         内容码与 GID 绑定（同一 GID 对任意 Depot 返回同一个码），因此可以
@@ -494,11 +495,25 @@ class ManifestDownloader:
                 code: str | None = None
                 for template in MANIFEST_REQUEST_CODE_APIS:
                     url = template.format(gid=manifest_gid, depot="", appid="")
-                    client = self._direct_http if "gmrc.wudrm.com" in url else self._http
-                    try:
-                        resp = client.get(url, timeout=12.0)
-                    except Exception as exc:
-                        logger.debug("内容码接口异常 %s: %s", url, exc)
+                    headers = {"User-Agent": "ManifestDeX/1.0"} if "manifestdex.com" in url else None
+                    # manifestdex / wudrm 优先直连，失败回退到系统代理客户端
+                    clients = [self._direct_http, self._http] if ("gmrc.wudrm.com" in url or "manifestdex.com" in url) else [self._http, self._direct_http]
+                    resp = None
+                    for client in clients:
+                        try:
+                            if headers:
+                                try:
+                                    resp = client.get(url, headers=headers, timeout=10.0)
+                                except TypeError:
+                                    resp = client.get(url, timeout=10.0)
+                            else:
+                                resp = client.get(url, timeout=10.0)
+                            if resp is not None and resp.status_code == 200:
+                                break
+                        except Exception as exc:
+                            logger.debug("内容码接口异常 %s: %s", url, exc)
+                            continue
+                    if resp is None:
                         retryable_seen = True
                         continue
                     if resp.status_code in self._RETRYABLE_STATUS:
