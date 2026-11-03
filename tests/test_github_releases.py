@@ -15,7 +15,10 @@ import zipfile
 import io
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
+from config import OPENSTEAMTOOL_REPO_URL
 from core.github_releases import GitHubReleases, GITHUB_API_LATEST_RELEASE, GITHUB_RELEASES_PAGE
+
+REPO_PATH = OPENSTEAMTOOL_REPO_URL.removeprefix("https://github.com/").strip("/")
 
 
 class TestGitHubReleases:
@@ -73,10 +76,10 @@ class TestGitHubReleases:
         mock_api_fail.raise_for_status.side_effect = requests.exceptions.RequestException("API failed")
 
         # 第二次调用 (爬取页面) 成功
-        mock_response.text = '''
+        mock_response.text = f'''
         <html>
-            <a href="/hazjy/ZSteamTool/releases/tag/v1.2.3">Latest</a>
-            <a href="/hazjy/ZSteamTool/releases/tag/v1.2.2">Previous</a>
+            <a href="/{REPO_PATH}/releases/tag/v1.2.3">Latest</a>
+            <a href="/{REPO_PATH}/releases/tag/v1.2.2">Previous</a>
         </html>
         '''
 
@@ -209,11 +212,11 @@ class TestGitHubReleases:
     # ===== 测试 1.11: 爬取 releases 页面 (正则匹配) =====
     def test_scrape_releases_page(self, github_client, mock_response):
         """测试 1.11: 正确爬取 releases 页面获取最新版本"""
-        mock_response.text = '''
+        mock_response.text = f'''
         <div class="release-entry">
-            <a href="/hazjy/ZSteamTool/releases/tag/v1.2.3">v1.2.3</a>
-            <a href="/hazjy/ZSteamTool/releases/tag/v1.2.2">v1.2.2</a>
-            <a href="/hazjy/ZSteamTool/releases/tag/v1.1.0">v1.1.0</a>
+            <a href="/{REPO_PATH}/releases/tag/v1.2.3">v1.2.3</a>
+            <a href="/{REPO_PATH}/releases/tag/v1.2.2">v1.2.2</a>
+            <a href="/{REPO_PATH}/releases/tag/v1.1.0">v1.1.0</a>
         </div>
         '''
 

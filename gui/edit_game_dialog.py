@@ -14,12 +14,13 @@ from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QPushButton, QLabel,
     QTableWidget, QTableWidgetItem, QListWidget, QListWidgetItem,
     QVBoxLayout, QHBoxLayout, QGroupBox, QMessageBox,
-    QAbstractItemView, QTabWidget, QTextEdit, QWidget,
+    QAbstractItemView, QTabWidget, QTextEdit, QWidget, QCheckBox,
 )
 
 from qfluentwidgets import FluentIcon
 
 from core.game_manager import GameMetadata, DepotInfo
+from core.ticket_service import kernel_supports_forcedenuvo
 
 
 class EditGameDialog(QDialog):
@@ -147,6 +148,35 @@ class EditGameDialog(QDialog):
 
         layout.addWidget(depots_group)
 
+        # ---- D 加密 / Denuvo 组 ----
+        denuvo_group = QGroupBox("D 加密（Denuvo）", widget)
+        denuvo_layout = QVBoxLayout(denuvo_group)
+        denuvo_layout.setContentsMargins(16, 16, 16, 16)
+        denuvo_layout.setSpacing(6)
+
+        self._force_denuvo_check = QCheckBox(
+            "强制按 Denuvo 授权（保护扫描漏判时使用）", denuvo_group
+        )
+        self._force_denuvo_check.setToolTip(
+            "写入 forcedenuvo(appid)。仅 OpenSteamTool 1.5.4+ 支持；"
+            "旧内核不认识该函数，可能导致整个 Lua 文件加载失败。"
+        )
+        if not kernel_supports_forcedenuvo():
+            self._force_denuvo_check.setEnabled(False)
+            self._force_denuvo_check.setText("强制按 Denuvo 授权（需要内核 1.5.4+）")
+        denuvo_layout.addWidget(self._force_denuvo_check)
+
+        denuvo_hint = QLabel(
+            "仅当游戏确实带 Denuvo、但内核没有自动识别时才勾选。"
+            "它只影响识别，不改变票据来源或授权窗口。",
+            denuvo_group,
+        )
+        denuvo_hint.setWordWrap(True)
+        denuvo_hint.setStyleSheet("color: #888; font-size: 11px;")
+        denuvo_layout.addWidget(denuvo_hint)
+
+        layout.addWidget(denuvo_group)
+
         # ---- DLCs 组 ----
         dlc_group = QGroupBox("DLCs（下载内容）", widget)
         dlc_layout = QVBoxLayout(dlc_group)
@@ -226,6 +256,7 @@ class EditGameDialog(QDialog):
         self._name_edit.setText(self._metadata.name or "")
         self._token_edit.setText(self._metadata.access_token or "")
         self._app_key_edit.setText(self._metadata.app_level_key or "")
+        self._force_denuvo_check.setChecked(bool(self._metadata.force_denuvo))
 
         self._depots_table.setRowCount(0)
         for depot in self._metadata.depots:
@@ -332,6 +363,7 @@ class EditGameDialog(QDialog):
         self._metadata.name = self._name_edit.text().strip()
         self._metadata.access_token = self._token_edit.text().strip()
         self._metadata.app_level_key = self._app_key_edit.text().strip()
+        self._metadata.force_denuvo = self._force_denuvo_check.isChecked()
 
         self._metadata.depots.clear()
         for row in range(self._depots_table.rowCount()):

@@ -61,6 +61,42 @@ def test_lua_content_includes_both_tickets_verbatim(tmp_path):
     assert 'setETicket(42, "cafebabe")' in content
 
 
+def test_lua_content_emits_forcedenuvo_after_addappid():
+    metadata = GameMetadata(
+        app_id="1361510",
+        depots=[DepotInfo(depot_id="1361511", depot_key="ab" * 32)],
+        force_denuvo=True,
+    )
+    lines = LuaGameManager._build_lua_content(metadata).splitlines()
+    addappid_idx = next(i for i, line in enumerate(lines) if line.startswith("addappid(1361510)"))
+    forced_idx = next(i for i, line in enumerate(lines) if line.startswith("forcedenuvo(1361510)"))
+    assert addappid_idx < forced_idx
+
+
+def test_parse_reads_forcedenuvo_for_matching_appid(tmp_path):
+    manager = _manager(tmp_path)
+    lua_path = tmp_path / "config" / "lua" / "1361510.lua"
+    lua_path.write_text(
+        "addappid(1361510)\nforcedenuvo(1361510)\n",
+        encoding="utf-8",
+    )
+    parsed = manager.parse_lua_to_metadata("1361510")
+    assert parsed is not None
+    assert parsed.force_denuvo is True
+
+
+def test_parse_ignores_forcedenuvo_for_other_appid(tmp_path):
+    manager = _manager(tmp_path)
+    lua_path = tmp_path / "config" / "lua" / "111.lua"
+    lua_path.write_text(
+        "addappid(111)\nforcedenuvo(222)\n",
+        encoding="utf-8",
+    )
+    parsed = manager.parse_lua_to_metadata("111")
+    assert parsed is not None
+    assert parsed.force_denuvo is False
+
+
 # ── 解析往返 ──────────────────────────────────────────────────
 def test_parse_roundtrip_preserves_manifest_gid_and_size(tmp_path):
     """回归：构建器输出带 size 的三参 setManifestid，解析器必须能读回。"""

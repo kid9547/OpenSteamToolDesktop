@@ -49,7 +49,7 @@ class SteamBridge:
         """从 DLLManager 获取 DLL 路径并更新注入器
 
         优先级：
-        1. DLLManager 管理的当前内核（ZSteamTool v1.2.x）
+        1. DLLManager 管理的当前内核（OpenSteamTool 1.5.4+ / ZSteamTool 1.2.x）
         2. 内置的 resources/fallback_dlls 目录
         3. 旧版 OpenSteam001 内核（仅在内置文件缺失时兜底）
         """
@@ -62,7 +62,7 @@ class SteamBridge:
 
         if self._dll_manager.is_legacy_kernel():
             logger.warning(
-                "检测到旧版 OpenSteam001 内核（上游已停更），优先改用内置 ZSteamTool 内核"
+                "检测到旧版内核（上游已停更），优先改用内置 OpenSteamTool 内核"
             )
 
         # 回退：使用内置的 resources/fallback_dlls 目录

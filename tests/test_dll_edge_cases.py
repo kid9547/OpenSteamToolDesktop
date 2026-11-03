@@ -17,7 +17,10 @@ import os
 import stat
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
+from config import OPENSTEAMTOOL_REPO_URL
 from core.github_releases import GitHubReleases
+
+REPO_PATH = OPENSTEAMTOOL_REPO_URL.removeprefix("https://github.com/").strip("/")
 from core.dll_manager import DLLManager
 
 
@@ -68,8 +71,8 @@ class TestDLLEdgeCases:
 
         # 第二次调用（爬取页面）成功
         mock_scrape_response = Mock()
-        mock_scrape_response.text = '''
-        <a href="/hazjy/ZSteamTool/releases/tag/v1.2.3">v1.2.3</a>
+        mock_scrape_response.text = f'''
+        <a href="/{REPO_PATH}/releases/tag/v1.2.3">v1.2.3</a>
         '''
         mock_scrape_response.raise_for_status = Mock()
 

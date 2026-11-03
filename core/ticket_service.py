@@ -40,6 +40,7 @@ from pathlib import Path
 
 from core import credential_store
 from core.app_paths import app_data_dir, bundled_tool
+from config import OPENSTEAMTOOL_KERNEL_VERSION
 from core.credential_store import (
     CredentialError,
     TicketBundle,
@@ -466,9 +467,38 @@ class TicketMintClient:
         return MintResult(bundle=bundle, status=status, detail="")
 
 
+def _kernel_version_tuple() -> tuple[int, ...]:
+    """把 ``OPENSTEAMTOOL_KERNEL_VERSION`` 解析成可比较的版本元组。"""
+    match = re.match(r"v?(\d+)\.(\d+)\.(\d+)", OPENSTEAMTOOL_KERNEL_VERSION.strip())
+    if not match:
+        return ()
+    return tuple(int(part) for part in match.groups())
+
+
+def kernel_supports_denuvo_mode() -> bool:
+    """内核是否仍支持 ``[denuvo] mode``（normal / compat）。
+
+    OpenSteamTool 1.5.4 重写授权窗口后删除了该配置；ZSteamTool 1.2.x
+    仍然使用它。未知版本按支持处理，避免误藏旧内核的开关。
+    """
+    version = _kernel_version_tuple()
+    return not version or version < (1, 5, 4)
+
+
+def kernel_supports_forcedenuvo() -> bool:
+    """内核是否注册了 ``forcedenuvo(appid)``（OpenSteamTool 1.5.4+）。"""
+    version = _kernel_version_tuple()
+    return bool(version) and version >= (1, 5, 4)
+
+
 def mint_supported_by_runtime() -> bool:
-    """运行时（ZSteamTool 1.2.x）支持 ``seteticketurl`` 在线现签。"""
-    return True  # ZSteamTool v1.2.x 的 LuaConfig 注册了 seteticketurl
+    """内核是否注册了 ``seteticketurl`` 在线现签。
+
+    ``seteticketurl`` 是 ZSteamTool 1.2.x 的扩展；OpenSteamTool 1.5.4
+    的 LuaConfig 已移除它，继续写入该函数会让整个 Lua 文件加载失败。
+    """
+    version = _kernel_version_tuple()
+    return not version or version < (1, 5, 4)
 
 
 def lua_mint_url_line(url: str) -> str:

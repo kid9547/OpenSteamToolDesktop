@@ -12,7 +12,7 @@ from pathlib import Path
 
 # ============ 应用信息 ============
 APP_NAME: str = "OpenSteamToolDesktop"
-APP_VERSION: str = "1.3.0"
+APP_VERSION: str = "1.3.1"
 
 # ============ 功能模块开关 ============
 # 科学加速页面开关（默认关闭；可通过环境变量 ENABLE_ACCELERATOR=1 或构建参数 --with-accelerator 开启）
@@ -33,15 +33,17 @@ GITHUB_API_LATEST_RELEASE: str = f"https://api.github.com/repos/{GITHUB_REPO_OWN
 GITHUB_API_LATEST: str = GITHUB_API_LATEST_RELEASE  # 别名
 
 # ============ OpenSteamTool 内核仓库（DLL 发布位置）============
-# 上游 OpenSteam001/OpenSteamTool 已停止跟进新版 Steam。当前维护中的内核：
-#   hazjy/ZSteamTool v1.2.1 — 支持 [denuvo] mode、seteticketurl、onlinefix、
-#   setStat、manifest.lua、当前 Steam 的 pattern/IPC 自动生成与缓存。
-OPENSTEAMTOOL_REPO_URL: str = "https://github.com/hazjy/ZSteamTool"
+# 内核主线已由 ZSteamTool 迁回 huanyuejue/OpenSteamTool。1.5.4 重写了 D 加密
+# 授权窗口（IPC 握手计数、切号后按当前登录账号选票），修复了低价区小号切号
+# 授权失败、启动 88500012 与部分游戏 error 54。
+# 注意：1.5.4 不再注册 seteticketurl() 与 [denuvo] mode；在线现签与 compat
+# 开关属于 ZSteamTool 1.2.x 的扩展，界面会按内核能力隐藏/降级。
+OPENSTEAMTOOL_REPO_URL: str = "https://github.com/huanyuejue/OpenSteamTool"
 OPENSTEAMTOOL_RELEASES_URL: str = f"{OPENSTEAMTOOL_REPO_URL}/releases"
-OPENSTEAMTOOL_KERNEL_REPO: str = "hazjy/ZSteamTool"
-OPENSTEAMTOOL_KERNEL_VERSION: str = "v1.2.1"
-OPENSTEAMTOOL_API_LATEST: str = "https://api.github.com/repos/hazjy/ZSteamTool/releases/latest"
-OPENSTEAMTOOL_API_TAG: str = "https://api.github.com/repos/hazjy/ZSteamTool/releases/tags/{tag}"
+OPENSTEAMTOOL_KERNEL_REPO: str = "huanyuejue/OpenSteamTool"
+OPENSTEAMTOOL_KERNEL_VERSION: str = "1.5.4"
+OPENSTEAMTOOL_API_LATEST: str = "https://api.github.com/repos/huanyuejue/OpenSteamTool/releases/latest"
+OPENSTEAMTOOL_API_TAG: str = "https://api.github.com/repos/huanyuejue/OpenSteamTool/releases/tags/{tag}"
 
 # ============ Steam 下载 ============
 STEAM_DOWNLOAD_URL: str = "https://store.steampowered.com/about/"

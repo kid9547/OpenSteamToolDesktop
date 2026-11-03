@@ -312,9 +312,19 @@ def test_mint_client_maps_other_status(monkeypatch):
         ts.TicketMintClient("http://x").mint("5")
 
 
-def test_runtime_mint_flag_is_on_for_zsteamtool():
-    """ZSteamTool v1.2.x 的 LuaConfig 注册了 seteticketurl，必须报告为支持。"""
-    assert ts.mint_supported_by_runtime() is True
+def test_runtime_mint_flag_is_off_for_ost_154():
+    """OpenSteamTool 1.5.4 的 LuaConfig 已移除 seteticketurl。"""
+    assert ts.mint_supported_by_runtime() is False
+
+
+def test_runtime_denuvo_mode_flag_is_off_for_ost_154():
+    """OpenSteamTool 1.5.4 用 IPC 握手授权，不再读取 [denuvo] mode。"""
+    assert ts.kernel_supports_denuvo_mode() is False
+
+
+def test_runtime_forcedenuvo_flag_is_on_for_ost_154():
+    """1.5.4 注册了 forcedenuvo(appid)，用于保护扫描漏判时手动指定。"""
+    assert ts.kernel_supports_forcedenuvo() is True
 
 
 def test_ready_note_explains_no_offline_forgery():

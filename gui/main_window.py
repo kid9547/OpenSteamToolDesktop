@@ -359,7 +359,7 @@ class MainWindow(MSFluentWindow):
             if success:
                 InfoBar.success(
                     "DLL 更新完成",
-                    f"{message}\n\n请重启 Steam 使新版本生效。",
+                    f"{message}\n\n请到「注入管理」重新部署 DLL，然后重启 Steam 使新内核生效。",
                     parent=self,
                     position=InfoBarPosition.TOP,
                 )

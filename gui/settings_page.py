@@ -499,7 +499,7 @@ class SettingsPage(ScrollArea):
         icon_lbl = QLabel(self)
         icon_lbl.setPixmap(FluentIcon.DEVELOPER_TOOLS.icon().pixmap(24, 24))
         header_layout.addWidget(icon_lbl)
-        header_layout.addWidget(StrongBodyLabel("内核功能开关（ZSteamTool v1.2.x）", card))
+        header_layout.addWidget(StrongBodyLabel("内核功能开关（OpenSteamTool）", card))
         header_layout.addStretch(1)
         card_layout.addLayout(header_layout)
 

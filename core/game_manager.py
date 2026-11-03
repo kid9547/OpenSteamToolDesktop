@@ -99,6 +99,8 @@ class GameMetadata:
     app_ticket: str = ""
     eticket: str = ""
     steam_id: str = ""
+    # OpenSteamTool 1.5.4+：保护扫描漏判时手动指定该 AppID 按 Denuvo 授权
+    force_denuvo: bool = False
 
 
 @dataclass
@@ -689,6 +691,15 @@ class LuaGameManager:
             else:
                 metadata.eticket = value
 
+        # ── 4c. 解析 forcedenuvo(appid)（OpenSteamTool 1.5.4+）──
+        metadata.force_denuvo = bool(
+            re.search(
+                rf"^\s*forcedenuvo\s*\(\s*{re.escape(app_id)}\s*\)",
+                content,
+                re.IGNORECASE | re.MULTILINE,
+            )
+        )
+
         logger.info(
             f"Parsed metadata for {app_id}: "
             f"name={metadata.name or '(none)'}, "
@@ -1250,6 +1261,12 @@ class LuaGameManager:
                 dlc_manifest_count += 1
         if dlc_manifest_count:
             logger.debug(f"  Bound {dlc_manifest_count} DLC depot manifest(s)")
+
+        # ── 强制 Denuvo 识别（OpenSteamTool 1.5.4+）──
+        # 保护扫描漏判时，让内核跳过扫描直接按 Denuvo 走授权握手。
+        if metadata.force_denuvo:
+            lines.append(f"forcedenuvo({metadata.app_id})")
+            logger.debug("  Forced Denuvo detection enabled")
 
         # ── D 加密票据（setAppTicket / setETicket）──
         # 必须放在 addappid 之后：OpenSteamTool 只对已 addappid 的 appid 应用票据

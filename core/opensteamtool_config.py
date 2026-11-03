@@ -1,9 +1,10 @@
 """Read/merge/write ``<Steam>/opensteamtool.toml`` safely.
 
-The kernel (ZSteamTool 1.2.x) reads a small set of sections.  Older releases
-of this desktop app used to overwrite the whole file, which destroyed user
-customisations.  This module keeps every existing value and only fills in
-missing keys.  A ``.bak`` copy is written before the first rewrite.
+The kernel (OpenSteamTool 1.5.4+ / ZSteamTool 1.2.x) reads a small set of
+sections.  Older releases of this desktop app used to overwrite the whole
+file, which destroyed user customisations.  This module keeps every existing
+value and only fills in missing keys.  A ``.bak`` copy is written before the
+first rewrite.
 """
 from __future__ import annotations
 

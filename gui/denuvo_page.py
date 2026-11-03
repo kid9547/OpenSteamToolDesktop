@@ -48,6 +48,7 @@ from qfluentwidgets import (
     SwitchButton,
 )
 
+from config import OPENSTEAMTOOL_KERNEL_VERSION
 from core import credential_store, ticket_service
 from core.credential_store import CredentialError, TicketBundle
 from utils.async_worker import AsyncWorker
@@ -556,10 +557,18 @@ class DenuvoAuthPage(_DenuvoPageBase):
         box.addWidget(title)
 
         hint = BodyLabel(
-            "ZSteamTool v1.2.x 提供 [denuvo] mode 与 setStat()。normal 模式只在 D 加密授权握手期间"
-            "使用票据账号，其余时间按你当前登录的账号运行，存档/云存档仍绑定你自己的账号；"
-            "只有游戏反复报授权错误（如 012 / 88500012）时才需要切到 compat。"
-            "配置改动会热重载，保存后立即生效，无需重启 Steam。",
+            (
+                "ZSteamTool v1.2.x 提供 [denuvo] mode 与 setStat()。normal 模式只在 D 加密授权握手期间"
+                "使用票据账号，其余时间按你当前登录的账号运行，存档/云存档仍绑定你自己的账号；"
+                "只有游戏反复报授权错误（如 012 / 88500012）时才需要切到 compat。"
+                "配置改动会热重载，保存后立即生效，无需重启 Steam。"
+            )
+            if ticket_service.kernel_supports_denuvo_mode()
+            else (
+                "OpenSteamTool 1.5.4 起授权窗口由 IPC 握手计数驱动：切换账号后优先使用当前登录"
+                "账号名下的票据，授权结束时把当前 SteamID 写回凭据库；不再需要 normal/compat 开关。"
+                "低价区小号切号失败、88500012 与部分 error 54 已在该内核修复。"
+            ),
             card,
         )
         hint.setWordWrap(True)
@@ -568,10 +577,18 @@ class DenuvoAuthPage(_DenuvoPageBase):
 
         mode_row = QHBoxLayout()
         mode_box = QVBoxLayout()
-        mode_title = BodyLabel("D 加密模式（[denuvo] mode）", card)
+        supports_mode = ticket_service.kernel_supports_denuvo_mode()
+        mode_title = BodyLabel(
+            "D 加密模式（[denuvo] mode）" if supports_mode else "D 加密授权机制",
+            card,
+        )
         mode_sub = BodyLabel(
-            "normal = 仅授权握手用票据身份，存档绑定当前账号（推荐）；"
-            "compat = 整场使用票据账号，存档会绑定出票账号，仅在必要时使用",
+            (
+                "normal = 仅授权握手用票据身份，存档绑定当前账号（推荐）；"
+                "compat = 整场使用票据账号，存档会绑定出票账号，仅在必要时使用"
+            )
+            if supports_mode
+            else "IPC 握手计数授权：切号后按当前登录账号选票，结束时回写当前 SteamID，无需手动切模式",
             card,
         )
         mode_sub.setStyleSheet("color: #888; font-size: 11px;")
@@ -581,6 +598,8 @@ class DenuvoAuthPage(_DenuvoPageBase):
         self._compat_switch.setOnText("兼容")
         self._compat_switch.setOffText("标准")
         self._compat_switch.checkedChanged.connect(self._on_denuvo_mode_changed)
+        if not supports_mode:
+            self._compat_switch.hide()
         mode_row.addLayout(mode_box, 1)
         mode_row.addWidget(self._compat_switch)
         box.addLayout(mode_row)
@@ -609,15 +628,19 @@ class DenuvoAuthPage(_DenuvoPageBase):
 
     def _refresh_kernel_options(self) -> None:
         bridge = self._resolve_bridge()
+        supports_mode = ticket_service.kernel_supports_denuvo_mode()
         mode = "normal"
-        if bridge is not None:
+        if supports_mode and bridge is not None:
             try:
                 mode = str(bridge.get_kernel_config("denuvo", "mode", "normal") or "normal").lower()
             except Exception:  # noqa: BLE001
                 mode = "normal"
-        self._compat_switch.blockSignals(True)
-        self._compat_switch.setChecked(mode == "compat")
-        self._compat_switch.blockSignals(False)
+        if supports_mode:
+            self._compat_switch.blockSignals(True)
+            self._compat_switch.setChecked(mode == "compat")
+            self._compat_switch.blockSignals(False)
+        else:
+            self._compat_switch.hide()
 
         app_id = self._current_app_id()
         has_lua_sid = False
@@ -631,13 +654,20 @@ class DenuvoAuthPage(_DenuvoPageBase):
             active = credential_store.active_steam_id()
         except Exception:  # noqa: BLE001
             pass
-        parts = [f"当前模式：{'compat（兼容）' if mode == 'compat' else 'normal（标准）'}"]
+        parts = []
+        if supports_mode:
+            parts.append(f"当前模式：{'compat（兼容）' if mode == 'compat' else 'normal（标准）'}")
+        else:
+            parts.append(f"当前内核：OpenSteamTool {OPENSTEAMTOOL_KERNEL_VERSION}（IPC 握手授权）")
         parts.append(f"Lua setStat 覆盖：{'已写入' if has_lua_sid else '未写入'}")
         if active:
             parts.append(f"当前登录 SteamID：{active}")
         self._kernel_status_label.setText("　|　".join(parts))
 
     def _on_denuvo_mode_changed(self, checked: bool) -> None:
+        if not ticket_service.kernel_supports_denuvo_mode():
+            self._append_log("当前内核使用 IPC 握手授权，已移除 [denuvo] mode，无需切换")
+            return
         bridge = self._resolve_bridge()
         if bridge is None:
             self._append_log("无法切换 D 加密模式：未获取到 Steam 桥接对象")

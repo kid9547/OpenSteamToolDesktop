@@ -124,12 +124,13 @@ class DLLManager(QObject):
             logger.warning("写入内核标记失败 %s: %s", version_dir, exc)
 
     def is_legacy_kernel(self, version_dir: Path | None = None) -> bool:
-        """判断版本目录是否是已停更的 OpenSteam001 内核。
+        """判断版本目录是否不是当前内核版本。
 
         判定规则：
         1. 有 ``kernel.json`` 且仓库不是当前内核仓库 → 旧版；
-        2. 没有标记文件时，按版本号推断：OpenSteam001 使用 1.3+/1.4+
-           版本号，而 ZSteamTool 使用 1.2.x。
+        2. 没有标记文件时，按版本号推断：低于当前内置版本
+           （``OPENSTEAMTOOL_KERNEL_VERSION``）的 1.2.x / 1.3.x / 1.4.x
+           都视为旧版。
         """
         if version_dir is None:
             current = self.get_current_version() or self.get_latest_local_version()
@@ -142,13 +143,15 @@ class DLLManager(QObject):
         info = self.get_kernel_info(version_dir)
         if info is not None:
             repo = str(info.get("repo") or "").strip()
-            if repo:
-                return repo.lower() != OPENSTEAMTOOL_KERNEL_REPO.lower()
+            if repo and repo.lower() != OPENSTEAMTOOL_KERNEL_REPO.lower():
+                return True
 
-        return self._parse_version(version_dir.name) >= (1, 3, 0, 0)
+        version = self._parse_version(version_dir.name)
+        target = self._parse_version(OPENSTEAMTOOL_KERNEL_VERSION)
+        return version != (0, 0, 0, 0) and version < target
 
     def get_bundled_kernel_dir(self) -> Optional[Path]:
-        """返回随程序分发的内置内核目录（ZSteamTool Release DLL）。"""
+        """返回随程序分发的内置内核目录（huanyuejue/OpenSteamTool 1.5.4 DLL）。"""
         candidates = [
             resource_root() / "resources" / "fallback_dlls",
             Path(__file__).resolve().parent.parent / "resources" / "fallback_dlls",
@@ -162,7 +165,7 @@ class DLLManager(QObject):
         """把内置内核复制到受管版本目录并设为当前版本。
 
         用于旧版内核迁移：即使 GitHub 不可达，也能离线切换到
-        ZSteamTool v1.2.x。
+        内置的 OpenSteamTool 1.5.4。
         """
         version = version or OPENSTEAMTOOL_KERNEL_VERSION
         bundled = self.get_bundled_kernel_dir()
@@ -400,7 +403,7 @@ class DLLManager(QObject):
         """
         logger.info("Checking for DLL updates...")
 
-        # 先识别受管的旧版 OpenSteam001 内核（1.3+/1.4+，上游已停更）。
+        # 先识别受管的旧版内核（1.2.x / 1.3.x / 1.4.x）。
         # 这类内核即使版本号更高，也不能继续使用。
         current_version = self.get_current_version() or self.get_latest_local_version()
         legacy_version = ""
@@ -415,7 +418,7 @@ class DLLManager(QObject):
             if legacy_version:
                 return (
                     True,
-                    f"检测到旧版内核 {legacy_version}（OpenSteam001 上游已停更），"
+                    f"检测到旧版内核 {legacy_version}，"
                     f"可离线切换到内置 {OPENSTEAMTOOL_KERNEL_REPO} {OPENSTEAMTOOL_KERNEL_VERSION}",
                     {"version": OPENSTEAMTOOL_KERNEL_VERSION, "assets": [], "source": "bundled"},
                 )
@@ -426,7 +429,7 @@ class DLLManager(QObject):
             if legacy_version:
                 return (
                     True,
-                    f"检测到旧版内核 {legacy_version}（OpenSteam001 上游已停更），"
+                    f"检测到旧版内核 {legacy_version}，"
                     f"可离线切换到内置 {OPENSTEAMTOOL_KERNEL_REPO} {OPENSTEAMTOOL_KERNEL_VERSION}",
                     {"version": OPENSTEAMTOOL_KERNEL_VERSION, "assets": [], "source": "bundled"},
                 )
@@ -443,7 +446,7 @@ class DLLManager(QObject):
             )
             return (
                 True,
-                f"检测到旧版内核 {legacy_version}（OpenSteam001 上游已停更），"
+                f"检测到旧版内核 {legacy_version}，"
                 f"建议切换到 {OPENSTEAMTOOL_KERNEL_REPO} {target_version}",
                 remote_info,
             )

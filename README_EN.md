@@ -1,7 +1,7 @@
 <h1 align="center">OpenSteamTool-Desktop</h1>
 
 <p align="center">
-  A Steam game library management desktop tool powered by <a href="https://github.com/OpenSteam001/OpenSteamTool">OpenSteamTool</a><br>
+  A Steam game library management desktop tool powered by <a href="https://github.com/huanyuejue/OpenSteamTool">OpenSteamTool</a><br>
   Windows 11 Fluent Design GUI for all-in-one game unlocking and management
 </p>
 
@@ -26,6 +26,16 @@
 ## Download
 
 Go to the [Releases](https://github.com/kid9547/OpenSteamToolDesktop/releases) page to download the latest version.
+
+---
+
+## What's New in v1.3.1
+
+- **Kernel upgraded to OpenSteamTool 1.5.4**: Denuvo authorization now uses an IPC-handshake counter, prefers tickets owned by the currently logged-in account after an account switch, and writes the active SteamID back when authorization ends. This fixes low-price/alt-account switching failures, `88500012`, and some `error 54` cases.
+- **Automatic legacy-kernel migration**: existing `ZSteamTool v1.2.1` directories are detected and switched to 1.5.4 on startup.
+- **Removed-option fallback**: 1.5.4 no longer registers `[denuvo] mode` or `seteticketurl`; the related UI is hidden so old directives cannot break Lua loading.
+- **Forced Denuvo detection**: the game editor adds “Force Denuvo authorization”, writing `forcedenuvo(appid)` for games whose protection scan is missed.
+- **Clearer update prompt**: after a kernel update, the app now tells you to redeploy the DLL from “Injection Management” and restart Steam.
 
 ---
 
@@ -381,16 +391,16 @@ Some features were inspired by the interaction and implementation ideas of the f
 | **Lua Rule Manager** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua), [G-Yoka/G-OpenSteamTool](https://github.com/G-Yoka/G-OpenSteamTool) | Lua enable/disable, bulk import and per-game configuration; this project scans both `config/lua` and `config/stplug-in` and adds conflict detection |
 | **Cloud Save Manager** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua) | Cloud-save backup/restore ideas; this project works directly on Steam `userdata` and does not require the CloudRedirect DLL |
 | **Manifest Pinning** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua), [hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | “Pin to current/latest manifest” and `setManifestid`; this project stores pins in local `manifest_pins.json` and never overwrites existing entries during auto-completion |
-| **Denuvo Tickets** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua), [hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | Ticket extraction/import and `[denuvo] mode`; this project requires both `AppTicket` and `ETicket` and writes them to both the registry and Lua |
+| **Denuvo Tickets** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua), [huanyuejue/OpenSteamTool](https://github.com/huanyuejue/OpenSteamTool) | Ticket extraction/import and account-switch authorization; this project requires both `AppTicket` and `ETicket` and writes them to both the registry and Lua; kernel 1.5.4 selects the active account's ticket and writes back its SteamID |
 | **AppID Lookup & Update Check** | [G-Yoka/G-OpenSteamTool](https://github.com/G-Yoka/G-OpenSteamTool), [SteamDatabase/SteamAppInfo](https://github.com/SteamDatabase/SteamAppInfo), [SteamDatabase/ValveKeyValue](https://github.com/SteamDatabase/ValveKeyValue) | Local cache lookup and `appinfo.vdf` binary parsing; this project adds combined build, depot-manifest, Lua and pin checks |
-| **Signature Tables / Data Channels** | [huanyuejue/steam-monitor](https://github.com/huanyuejue/steam-monitor), [hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | Zero-seed pattern/IPC resolution; this project ships pre-generated TOMLs for the current Steam build as a fallback when mirrors are unreachable |
+| **Signature Tables / Data Channels** | [huanyuejue/steam-monitor](https://github.com/huanyuejue/steam-monitor), [huanyuejue/OpenSteamTool](https://github.com/huanyuejue/OpenSteamTool) | Zero-seed pattern/IPC resolution; this project ships pre-generated TOMLs for the current Steam build as a fallback when mirrors are unreachable |
 | **Cloud Save Redirect** | [Selectively11/CloudRedirect](https://github.com/Selectively11/CloudRedirect) (archived), [hazjy/CloudRedirect](https://github.com/hazjy/CloudRedirect) | Only `[cloud]` configuration, toggle and DLL detection are provided; this project **does not bundle** `cloud_redirect.dll` |
-| **Kernel DLLs** | [hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | The bundled kernel is ZSteamTool **v1.2.1**; its upstream is [OpenSteam001/OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool), with changes inspired by [BetterSteamTools](https://github.com/madoiscool/BetterSteamTools) |
+| **Kernel DLLs** | [huanyuejue/OpenSteamTool](https://github.com/huanyuejue/OpenSteamTool) | The bundled kernel is OpenSteamTool **1.5.4** (IPC-handshake authorization and account-switch fixes); earlier builds came from [hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool), with changes inspired by [BetterSteamTools](https://github.com/madoiscool/BetterSteamTools) |
 | **Desktop Base** | [yong0512/OpenSteamToolDesktop](https://github.com/yong0512/OpenSteamToolDesktop) | This project is a secondary development based on that desktop application |
 
 > Note: All features above have been verified for page rendering and local data reading against a real Steam installation. Write operations such as Lua toggling, cloud-save backup, manifest pinning and Denuvo ticket import keep original files or backups wherever possible. Real Denuvo authorization still requires an account that **actually owns the game**; see the FAQ above.
 >
-> The bundled ZSteamTool kernel is distributed under **GPL-3.0**; see its repository for source and license. All other reference projects remain copyright of their respective authors.
+> The bundled OpenSteamTool kernel is distributed under **GPL-3.0**; see its repository for source and license. All other reference projects remain copyright of their respective authors.
 
 ---
 

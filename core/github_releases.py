@@ -3,9 +3,10 @@ github_releases — GitHub Releases 爬取模块
 
 通过 GitHub API / Releases 页面获取 OpenSteamTool 内核最新版本并下载 DLL。
 
-当前内核仓库为 ``hazjy/ZSteamTool``（v1.2.x）。它的 Release ZIP 同时包含
-``Release/`` 与 ``Debug/`` 两套 DLL，本模块只解压 ``Release/`` 并扁平化到
-版本目录，避免把体积巨大且带控制台日志的 Debug 版本部署到 Steam。
+当前内核主线为 ``huanyuejue/OpenSteamTool``（1.5.4+），历史分支
+``hazjy/ZSteamTool``（1.2.x）仍可通过旧版本目录识别。1.5.4 的 Release ZIP
+把三个 DLL 放在根目录，本模块同时兼容根目录与 ``Release/`` 子目录并扁平化
+到版本目录，避免把体积巨大且带控制台日志的 Debug 版本部署到 Steam。
 """
 
 from __future__ import annotations
@@ -247,14 +248,14 @@ class GitHubReleases(QObject):
         bare = version.lstrip("v")
         # 常见的文件名模式（优先 Release）
         possible_names = [
-            f"ZSteamTool-{version}.zip",
-            f"ZSteamTool-v{bare}.zip",
-            f"ZSteamTool-{version}-Release.zip",
-            f"ZSteamTool-v{bare}-Release.zip",
             f"OpenSteamTool-{version}-Release.zip",
             f"OpenSteamTool-{bare}-Release.zip",
             f"OpenSteamTool-{version}.zip",
             f"OpenSteamTool-{bare}.zip",
+            f"ZSteamTool-{version}.zip",
+            f"ZSteamTool-v{bare}.zip",
+            f"ZSteamTool-{version}-Release.zip",
+            f"ZSteamTool-v{bare}-Release.zip",
         ]
         tags = [version]
         if not version.startswith("v"):

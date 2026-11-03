@@ -15,6 +15,7 @@ import json
 import zipfile
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
+from config import OPENSTEAMTOOL_KERNEL_REPO, OPENSTEAMTOOL_KERNEL_VERSION
 from core.dll_manager import DLLManager, DLL_DIR_NAME, VERSION_PATTERN
 
 
@@ -304,10 +305,10 @@ class TestDLLManager:
     def test_get_dll_path_with_current_version(self, manager):
         """测试 2.19: 获取当前应使用的 DLL 路径（有当前版本）"""
         # 设置当前版本
-        manager.set_current_version("v1.2.3")
+        manager.set_current_version("v1.5.4")
 
         # 创建版本目录和 DLL
-        version_dir = manager.get_version_dir("v1.2.3")
+        version_dir = manager.get_version_dir("v1.5.4")
         version_dir.mkdir(parents=True, exist_ok=True)
         (version_dir / "OpenSteamTool.dll").write_bytes(b"fake")
         (version_dir / "dwmapi.dll").write_bytes(b"fake")
@@ -320,7 +321,7 @@ class TestDLLManager:
     def test_get_dll_path_fallback_to_latest(self, manager):
         """测试 2.20: 无当前版本时回退到最新本地版本"""
         # 创建最新版本目录
-        version_dir = manager.get_version_dir("v1.2.3")
+        version_dir = manager.get_version_dir("v1.5.4")
         version_dir.mkdir(parents=True, exist_ok=True)
         (version_dir / "OpenSteamTool.dll").write_bytes(b"fake")
         (version_dir / "dwmapi.dll").write_bytes(b"fake")
@@ -344,7 +345,11 @@ class TestDLLManager:
 
         zsteam_dir = manager.get_version_dir("v1.2.1")
         zsteam_dir.mkdir(parents=True)
-        assert manager.is_legacy_kernel(zsteam_dir) is False
+        assert manager.is_legacy_kernel(zsteam_dir) is True
+
+        current_dir = manager.get_version_dir("v1.5.4")
+        current_dir.mkdir(parents=True)
+        assert manager.is_legacy_kernel(current_dir) is False
 
     def test_kernel_marker_repo_detection(self, manager):
         """kernel.json 记录其它仓库时应识别为旧版。"""
@@ -357,10 +362,18 @@ class TestDLLManager:
         assert manager.is_legacy_kernel(version_dir) is True
 
         (version_dir / "kernel.json").write_text(
-            json.dumps({"repo": "hazjy/ZSteamTool", "version": "v1.2.3"}),
+            json.dumps({"repo": OPENSTEAMTOOL_KERNEL_REPO, "version": "v1.2.3"}),
             encoding="utf-8",
         )
-        assert manager.is_legacy_kernel(version_dir) is False
+        assert manager.is_legacy_kernel(version_dir) is True
+
+        current_dir = manager.get_version_dir("v1.5.4")
+        current_dir.mkdir(parents=True)
+        (current_dir / "kernel.json").write_text(
+            json.dumps({"repo": OPENSTEAMTOOL_KERNEL_REPO, "version": "v1.5.4"}),
+            encoding="utf-8",
+        )
+        assert manager.is_legacy_kernel(current_dir) is False
 
     def test_get_dll_path_skips_legacy_kernel(self, manager):
         """旧版内核目录不应作为默认 DLL 源。"""
@@ -391,7 +404,7 @@ class TestDLLManager:
 
         assert update_available is True
         assert "旧版内核" in msg
-        assert version_info["version"] == "v1.2.1"
+        assert version_info["version"] == OPENSTEAMTOOL_KERNEL_VERSION
 
     def test_install_bundled_kernel_writes_marker(self, manager, tmp_path, monkeypatch):
         """内置内核安装后应写入 kernel.json 并设为当前版本。"""
@@ -401,15 +414,15 @@ class TestDLLManager:
             (bundled / dll).write_bytes(b"fake")
         monkeypatch.setattr(manager, "get_bundled_kernel_dir", lambda: bundled)
 
-        success, msg = manager.install_bundled_kernel("v1.2.1")
+        success, msg = manager.install_bundled_kernel(OPENSTEAMTOOL_KERNEL_VERSION)
 
         assert success is True
-        assert manager.get_current_version() == "v1.2.1"
-        installed = manager.get_version_dir("v1.2.1")
+        assert manager.get_current_version() == OPENSTEAMTOOL_KERNEL_VERSION
+        installed = manager.get_version_dir(OPENSTEAMTOOL_KERNEL_VERSION)
         assert (installed / "kernel.json").is_file()
         assert (installed / "OpenSteamTool.dll").is_file()
         info = json.loads((installed / "kernel.json").read_text(encoding="utf-8"))
-        assert info["repo"] == "hazjy/ZSteamTool"
+        assert info["repo"] == OPENSTEAMTOOL_KERNEL_REPO
 
     # ===== 测试 2.22: 检查 DLL 版本 (文件不存在) =====
     def test_check_dll_version_file_not_exists(self, manager):

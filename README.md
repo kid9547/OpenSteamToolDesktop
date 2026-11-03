@@ -29,6 +29,16 @@
 
 ---
 
+## v1.3.1 修复（D 加密切号授权）
+
+- **内核升级到 OpenSteamTool 1.5.4**：授权窗口改为 IPC 握手计数，切号后优先使用当前登录账号名下的票据，并在授权结束时回写当前 SteamID，修复低价区小号切号授权失败、`88500012` 与部分 `error 54`。
+- **自动迁移旧内核**：启动发现 `ZSteamTool v1.2.1` 旧目录时自动切换到 1.5.4，无需手动删除。
+- **失效开关降级**：1.5.4 已移除 `[denuvo] mode` 与 `seteticketurl`，相关 UI 自动隐藏，避免写入会中断 Lua 加载的旧指令。
+- **强制 Denuvo 识别**：游戏「编辑」新增「强制按 Denuvo 授权」，写入 `forcedenuvo(appid)`，用于内核漏判保护壳的游戏。
+- **升级提示修正**：内核更新完成后提示到「注入管理」重新部署 DLL，再重启 Steam。
+
+---
+
 ## v1.3.0 优化与修复
 
 - **导航栏瘦身重构（3+1 黄金架构）**：重整左侧臃肿的 13 项菜单，将日常最高频的「游戏库」与「搜索入库」收纳于「游戏中心」顶部分段切换；将低频的散装清单、Lua 规则审计、云存档维护等整合至游戏库工具栏的「高级与维护」下拉菜单；合并「注入部署」与「组件状态」为「内核管理」；将诊断中心与 AppID 探针折叠收纳于设置页底部。
@@ -427,16 +437,16 @@ python build_exe.py --no-zip
 | **Lua 规则管理** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua)、[G-Yoka/G-OpenSteamTool](https://github.com/G-Yoka/G-OpenSteamTool) | 参考 Lua 启停、批量导入与游戏配置管理；本项目同时扫描 `config/lua` 和 `config/stplug-in`，并增加冲突检测 |
 | **云存档管理** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua) | 参考云存档备份/还原思路；本项目直接处理 Steam `userdata`，不依赖 CloudRedirect DLL |
 | **Manifest 版本固定** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua)、[hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | 参考“固定到当前/最新清单”和 `setManifestid`；本项目用本地 `manifest_pins.json` 保存固定记录，补全时只补空不覆盖 |
-| **D 加密票据** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua)、[hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | 参考票据提取/导入与 `[denuvo] mode`；本项目要求 `AppTicket` + `ETicket` 双票据，并同时写入注册表和 Lua |
+| **D 加密票据** | [huanyuejue/Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua)、[huanyuejue/OpenSteamTool](https://github.com/huanyuejue/OpenSteamTool) | 参考票据提取/导入与切号授权；本项目要求 `AppTicket` + `ETicket` 双票据，并同时写入注册表和 Lua；1.5.4 内核负责按当前登录账号选票与回写 SteamID |
 | **AppID 查询与更新检测** | [G-Yoka/G-OpenSteamTool](https://github.com/G-Yoka/G-OpenSteamTool)、[SteamDatabase/SteamAppInfo](https://github.com/SteamDatabase/SteamAppInfo)、[SteamDatabase/ValveKeyValue](https://github.com/SteamDatabase/ValveKeyValue) | 参考本地缓存查询与 `appinfo.vdf` 二进制解析；本项目增加 Build、Depot 清单、Lua 规则和固定记录的联合检测 |
-| **签名表 / 数据通道** | [huanyuejue/steam-monitor](https://github.com/huanyuejue/steam-monitor)、[hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | 采用零种子 pattern/IPC 解析思路；本项目预生成当前 Steam 版本的 TOML 并随包兜底，镜像不可达时仍可启动 |
+| **签名表 / 数据通道** | [huanyuejue/steam-monitor](https://github.com/huanyuejue/steam-monitor)、[huanyuejue/OpenSteamTool](https://github.com/huanyuejue/OpenSteamTool) | 采用零种子 pattern/IPC 解析思路；本项目预生成当前 Steam 版本的 TOML 并随包兜底，镜像不可达时仍可启动 |
 | **云存档重定向** | [Selectively11/CloudRedirect](https://github.com/Selectively11/CloudRedirect)（原仓库已归档）、[hazjy/CloudRedirect](https://github.com/hazjy/CloudRedirect) | 仅提供 `[cloud]` 配置、开关和 DLL 检测；本项目**不捆绑** `cloud_redirect.dll`，需要用户自行放置 |
-| **内核 DLL** | [hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool) | 当前打包的是 ZSteamTool **v1.2.1** 内核；其上游为 [OpenSteam001/OpenSteamTool](https://github.com/OpenSteam001/OpenSteamTool)，并参考了 [BetterSteamTools](https://github.com/madoiscool/BetterSteamTools) 的改动 |
+| **内核 DLL** | [huanyuejue/OpenSteamTool](https://github.com/huanyuejue/OpenSteamTool) | 当前打包的是 OpenSteamTool **1.5.4** 内核（含 IPC 握手授权与切号修复）；历史版本来自 [hazjy/ZSteamTool](https://github.com/hazjy/ZSteamTool)，并参考了 [BetterSteamTools](https://github.com/madoiscool/BetterSteamTools) 的改动 |
 | **桌面端基础** | [yong0512/OpenSteamToolDesktop](https://github.com/yong0512/OpenSteamToolDesktop) | 本项目在其基础上进行功能二次开发与维护 |
 
 > 说明：上述功能均已在真实 Steam 环境中做过页面渲染与数据读取验证；Lua 启停、云存档备份、Manifest 固定、D 加密票据等写入操作会尽量保留原文件或备份。D 加密真实授权仍要求使用**实际拥有该游戏**的账号，详见上方 FAQ。
 >
-> 打包的 ZSteamTool 内核按 **GPL-3.0** 分发，源码与许可证见其仓库；其余参考项目的版权归各自作者所有。
+> 打包的 OpenSteamTool 内核按 **GPL-3.0** 分发，源码与许可证见其仓库；其余参考项目的版权归各自作者所有。
 
 ---
 
